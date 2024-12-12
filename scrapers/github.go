@@ -128,13 +128,6 @@ func (s *GitHubScraper) mapToUserEntry(user *github.GetSshPublicKeysSearchSearch
 }
 
 func (s *GitHubScraper) createUserIndex(ctx context.Context) error {
-	// Set user index to default if not set
-	if s.UserIndex == "" {
-		s.UserIndex = s.getPlatformConfigString("userIndex")
-		if err := s.Save(ctx); err != nil {
-			return fmt.Errorf("failed to save scraper while setting user index: %w", err)
-		}
-	}
 	// Check if user index exists, create it if it doesn't
 	exists, err := s.Elasticsearch.Indices.Exists(s.UserIndex).Do(ctx)
 	if err != nil {
@@ -265,10 +258,6 @@ func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
 	var res *github.GetSshPublicKeysResponse
 	var err error
 	rateLimitRemaining := maxPrimaryRateLimit
-	// If the minimum iteration duration is not set, we set it to the default value
-	if s.MinimumIterationDuration == 0 {
-		s.MinimumIterationDuration = s.getPlatformConfigDuration("minimumIterationDuration")
-	}
 	for {
 		iterationStart := time.Now()
 		// A single request usually costs between 1-2 rate limit points
