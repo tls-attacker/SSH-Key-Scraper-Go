@@ -289,10 +289,9 @@ func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 		}
 		var publicKeys []gitlab.GitLabPublicKey
 		if err := json.NewDecoder(res.Body).Decode(&publicKeys); err != nil {
-			// If we encounter any error, we wait for the configured duration before continuing
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
-			failures <- fmt.Errorf("failed to decode public keys from json for user %v: %w", user.Username, err)
-			return
+			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
+			s.log("failed to decode public keys from json for user %v: %w", true, user.Username, err)
+			continue
 		}
 		s.processResponse(ctx, &user, publicKeys)
 	}
