@@ -11,7 +11,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/indices/create"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"net/http"
-	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,6 +88,11 @@ func (s *GitLabScraper) newRestClient() *http.Client {
 	}
 }
 
+func (s *GitLabScraper) gidToUserId(gid string) (int, error) {
+	parts := strings.Split(gid, "/")
+	return strconv.Atoi(parts[len(parts)-1])
+}
+
 func (s *GitLabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore) {
 	if last == nil {
 		return
@@ -96,10 +101,14 @@ func (s *GitLabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersU
 		CreatedAt string `json:"created_at"`
 		Id        string `json:"id"`
 	}
-	idParts := strings.Split(last.Id, "/")
+	userId, err := s.gidToUserId(last.Id)
+	if err != nil {
+		s.log("failed to parse user id from gid: %v", true, err)
+		return
+	}
 	cursorData := cursor{
 		CreatedAt: last.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		Id:        idParts[len(idParts)-1],
+		Id:        strconv.Itoa(userId),
 	}
 	cursorJson, _ := json.Marshal(cursorData)
 	s.Cursor = base64.StdEncoding.EncodeToString(cursorJson)
@@ -260,7 +269,12 @@ func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 	defer wg.Done()
 	restClient := s.newRestClient()
 	for user := range users {
-		res, err := restClient.Get(fmt.Sprintf("https://gitlab.com/api/v4/users/%v/keys", url.QueryEscape(user.Username)))
+		userId, err := s.gidToUserId(user.Id)
+		if err != nil {
+			s.log("failed to parse user id from gid: %v", true, err)
+			continue
+		}
+		res, err := restClient.Get(fmt.Sprintf("https://gitlab.com/api/v4/users/%v/keys", strconv.Itoa(userId)))
 		if err != nil {
 			// If we encounter any error, we wait for the configured duration before continuing
 			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
