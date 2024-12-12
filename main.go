@@ -63,7 +63,7 @@ func main() {
 	es := initElasticsearch()
 
 	// GitHub
-	if viper.GetBool("graphql.github.enabled") {
+	if viper.GetBool("scrapers.github.enabled") {
 		scraper, err := LoadScraper(ctx, es, GitHub)
 		if err != nil {
 			log.Fatalf("[!] failed to load github scraper from database: %s", err.Error())
@@ -72,7 +72,7 @@ func main() {
 	}
 
 	// GitLab
-	if viper.GetBool("graphql.gitlab.enabled") {
+	if viper.GetBool("scrapers.gitlab.enabled") {
 		scraper, err := LoadScraper(ctx, es, GitLab)
 		if err != nil {
 			log.Fatalf("[!] failed to load gitlab scraper from database: %s", err.Error())

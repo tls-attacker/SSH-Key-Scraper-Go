@@ -87,15 +87,15 @@ func (s *Scraper) saveUnprocessedUser(key string, user any) error {
 }
 
 func (s *Scraper) getPlatformConfigString(key string) string {
-	return viper.GetString(fmt.Sprintf("graphql.%s.%s", s.Platform, key))
+	return viper.GetString(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
 func (s *Scraper) getPlatformConfigInt(key string) int {
-	return viper.GetInt(fmt.Sprintf("graphql.%s.%s", s.Platform, key))
+	return viper.GetInt(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
 func (s *Scraper) getPlatformConfigDuration(key string) time.Duration {
-	return viper.GetDuration(fmt.Sprintf("graphql.%s.%s", s.Platform, key))
+	return viper.GetDuration(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
 func (s *Scraper) log(format string, error bool, v ...any) {
