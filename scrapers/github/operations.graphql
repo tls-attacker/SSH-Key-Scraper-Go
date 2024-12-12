@@ -1,0 +1,33 @@
+query GetSshPublicKeys(
+    $query: String!,
+    # @genqlient(omitempty: true)
+    $after: String) {
+    rateLimit {
+        cost
+        remaining
+        resetAt
+    }
+    search(query: $query, type: USER, first: 100, after: $after) {
+        userCount
+        pageInfo {
+            endCursor
+            hasNextPage
+        }
+        nodes {
+            ... on User {
+                databaseId
+                login
+                createdAt
+                updatedAt
+                publicKeys(first: 100) {
+                    totalCount
+                    nodes {
+                        # Metadata is only accessible for public keys owned by the authenticated user
+                        key
+                        fingerprint
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,17 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="SSHKS (Linux amd64)" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="SSH-Key-Scraper" />
+    <working_directory value="$PROJECT_DIR$" />
+    <envs>
+      <env name="GOOS" value="linux" />
+      <env name="GOARCH" value="amd64" />
+    </envs>
+    <kind value="PACKAGE" />
+    <package value="SSH-Key-Scraper" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$" />
+    <output_directory value="$PROJECT_DIR$/dist" />
+    <option name="run" value="false" />
+    <method v="2" />
+  </configuration>
+</component>
