@@ -1,7 +1,7 @@
-package scrapers
+package main
 
 import (
-	"SSH-Key-Scraper/scrapers/gitlab"
+	"SSH-Key-Scraper/graphql/gitlab"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +16,15 @@ import (
 	"sync"
 	"time"
 )
+
+type GitLabPublicKey struct {
+	Id        int64     `json:"id"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Key       string    `json:"key"`
+	UsageType string    `json:"usage_type"`
+}
 
 type GitLabScraper struct {
 	*Scraper
@@ -100,7 +109,7 @@ func (s *GitLabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersU
 	s.log("cursor updated, new cursor: %v", false, s.Cursor)
 }
 
-func (s *GitLabScraper) mapToUserEntry(user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys *[]gitlab.GitLabPublicKey, existing *GitLabUserEntry) *GitLabUserEntry {
+func (s *GitLabScraper) mapToUserEntry(user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys *[]GitLabPublicKey, existing *GitLabUserEntry) *GitLabUserEntry {
 	now := time.Now()
 	entry := &GitLabUserEntry{
 		DatabaseID:     user.Id,
@@ -192,7 +201,7 @@ func (s *GitLabScraper) createUserIndex(ctx context.Context) error {
 	return nil
 }
 
-func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys []gitlab.GitLabPublicKey) {
+func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys []GitLabPublicKey) {
 	searchResult, err := s.Elasticsearch.Search().
 		Index(s.UserIndex).
 		Request(&search.Request{
@@ -284,7 +293,7 @@ func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 			failures <- fmt.Errorf("unexpected content type: %v", res.Header.Get("Content-Type"))
 			return
 		}
-		var publicKeys []gitlab.GitLabPublicKey
+		var publicKeys []GitLabPublicKey
 		if err := json.NewDecoder(res.Body).Decode(&publicKeys); err != nil {
 			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
 			s.log("failed to decode public keys from json for user %v: %w", true, user.Username, err)

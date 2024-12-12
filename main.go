@@ -1,7 +1,6 @@
 package main
 
 import (
-	"SSH-Key-Scraper/scrapers"
 	"context"
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/reugn/go-quartz/quartz"
@@ -64,8 +63,8 @@ func main() {
 	es := initElasticsearch()
 
 	// GitHub
-	if viper.GetBool("scrapers.github.enabled") {
-		scraper, err := scrapers.LoadScraper(ctx, es, scrapers.GitHub)
+	if viper.GetBool("graphql.github.enabled") {
+		scraper, err := LoadScraper(ctx, es, GitHub)
 		if err != nil {
 			log.Fatalf("[!] failed to load github scraper from database: %s", err.Error())
 		}
@@ -73,8 +72,8 @@ func main() {
 	}
 
 	// GitLab
-	if viper.GetBool("scrapers.gitlab.enabled") {
-		scraper, err := scrapers.LoadScraper(ctx, es, scrapers.GitLab)
+	if viper.GetBool("graphql.gitlab.enabled") {
+		scraper, err := LoadScraper(ctx, es, GitLab)
 		if err != nil {
 			log.Fatalf("[!] failed to load gitlab scraper from database: %s", err.Error())
 		}

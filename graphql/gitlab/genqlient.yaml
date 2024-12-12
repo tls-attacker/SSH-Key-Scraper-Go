@@ -7,7 +7,7 @@ generated: generated.go
 bindings:
   Date:
     type: time.Time
-    marshaler: SSH-Key-Scraper/scrapers/gitlab.MarshalDate
-    unmarshaler: SSH-Key-Scraper/scrapers/gitlab.UnmarshalDate
+    marshaler: SSH-Key-Scraper/graphql/gitlab.MarshalDate
+    unmarshaler: SSH-Key-Scraper/graphql/gitlab.UnmarshalDate
   Time:
     type: time.Time

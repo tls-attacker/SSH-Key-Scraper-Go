@@ -1,7 +1,7 @@
-package scrapers
+package main
 
 import (
-	"SSH-Key-Scraper/scrapers/github"
+	"SSH-Key-Scraper/graphql/github"
 	"context"
 	"encoding/json"
 	"fmt"
