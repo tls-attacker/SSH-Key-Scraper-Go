@@ -1,0 +1,27 @@
+{
+  "elasticsearch": {
+    "url": [
+      "https://localhost:9200"
+    ],
+    "username": "elastic",
+    "password": "",
+    "tls": {
+      "enabled": true,
+      "caCert": "elasticsearch.pem"
+    }
+  },
+  "scraperIndex": "sshks_scrapers",
+  "scrapers": {
+    "github": {
+      "enabled": true,
+      "token": "",
+      "minimumIterationDuration": "20s",
+      "userIndex": "sshks_github_users",
+      "initialCursor": "2007-10-20T00:00:00Z",
+      "incrementalInterval": "24h",
+      "fullInterval": "720h",
+      "secondaryRateLimitCooldown": "1m",
+      "apiErrorCooldown": "1h"
+    }
+  }
+}

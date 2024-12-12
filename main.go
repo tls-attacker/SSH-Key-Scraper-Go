@@ -62,11 +62,15 @@ func main() {
 	sched, ctx, cancel := initScheduler()
 	defer cancel()
 	es := initElasticsearch()
-	githubScraper, err := scrapers.LoadScraper(ctx, es, scrapers.Github)
-	if err != nil {
-		log.Fatalf("[!] failed to load github scraper from database: %s", err.Error())
+
+	// GitHub
+	if viper.GetBool("scrapers.github.enabled") {
+		scraper, err := scrapers.LoadScraper(ctx, es, scrapers.GitHub)
+		if err != nil {
+			log.Fatalf("[!] failed to load github scraper from database: %s", err.Error())
+		}
+		scraper.Register(sched)
 	}
-	githubScraper.Register(sched)
 
 	<-ctx.Done()
 }

@@ -9,72 +9,24 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/indices/create"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
-	"github.com/spf13/viper"
-	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// The initialCursor which we use to start scraping from
-// This should be less or equal to the registration date of the first user
-var initialCursor = time.Date(2007, 10, 20, 00, 00, 00, 00, time.UTC)
-
 // The timespan which we request in a single request from the search API (30 days)
 const timespan = 30 * 24 * time.Hour
-
-// The userIndex in which we store the API responses for further processing
-const userIndex = "sshks_github_users"
 
 // The maximum number of users GitHub returns to a single search request (even with pagination)
 const searchLimit = 1000
 
-type githubTransport struct {
-	token   string
-	wrapped http.RoundTripper
-}
+// The maximum number of requests we can make to the GitHub API per hour
+const maxPrimaryRateLimit = 5000
 
-func (t *githubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", t.token))
-	return t.wrapped.RoundTrip(req)
-}
-
-func newGraphQLClient() graphql.Client {
-	httpClient := http.Client{
-		Transport: &githubTransport{
-			token:   viper.GetString("github.token"),
-			wrapped: http.DefaultTransport,
-		},
-	}
-	return graphql.NewClient("https://api.github.com/graphql", &httpClient)
-}
-
-func compileQueryString(cursor string) string {
-	startDate, _ := time.Parse(time.RFC3339, cursor)
-	endDate := startDate.Add(timespan)
-	return fmt.Sprintf("created:%s..%s type:user sort:joined-asc",
-		startDate.UTC().Format("2006-01-02T15:04:05Z"),
-		endDate.UTC().Format("2006-01-02T15:04:05Z"))
-}
-
-func updateCursor(ctx context.Context, s *Scraper, res *github.GetSshPublicKeysResponse) {
-	if res.Search.UserCount < searchLimit && !res.Search.PageInfo.HasNextPage {
-		current, _ := time.Parse(time.RFC3339, s.Cursor)
-		current = current.Add(timespan)
-		if current.After(time.Now()) {
-			current = time.Now()
-		}
-		s.Cursor = current.Format(time.RFC3339)
-	} else if user, ok := res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser); ok {
-		s.Cursor = user.CreatedAt.Format(time.RFC3339)
-	}
-	if err := s.Save(ctx); err != nil {
-		log.Printf("[!][%v] failed to save cursor: %v", s.Platform, err)
-	}
-	log.Printf("[i][%v] cursor updated, new cursor: %v", s.Platform, s.Cursor)
+type GitHubScraper struct {
+	*Scraper
 }
 
 type GitHubPublicKeyEntry struct {
@@ -94,7 +46,52 @@ type GitHubUserEntry struct {
 	PublicKeys []GitHubPublicKeyEntry `json:"publicKeys"`
 }
 
-func mapToUserEntry(user *github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser, existing *GitHubUserEntry) *GitHubUserEntry {
+type githubTransport struct {
+	token   string
+	wrapped http.RoundTripper
+}
+
+func (t *githubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", t.token))
+	return t.wrapped.RoundTrip(req)
+}
+
+func (s *GitHubScraper) newGraphQLClient() graphql.Client {
+	httpClient := http.Client{
+		Transport: &githubTransport{
+			token:   s.getPlatformConfigString("token"),
+			wrapped: http.DefaultTransport,
+		},
+	}
+	return graphql.NewClient("https://api.github.com/graphql", &httpClient)
+}
+
+func (s *GitHubScraper) compileQueryString(cursor string) string {
+	startDate, _ := time.Parse(time.RFC3339, cursor)
+	endDate := startDate.Add(timespan)
+	return fmt.Sprintf("created:%s..%s type:user sort:joined-asc",
+		startDate.UTC().Format("2006-01-02T15:04:05Z"),
+		endDate.UTC().Format("2006-01-02T15:04:05Z"))
+}
+
+func (s *GitHubScraper) updateCursor(ctx context.Context, res *github.GetSshPublicKeysResponse) {
+	if res.Search.UserCount < searchLimit && !res.Search.PageInfo.HasNextPage {
+		current, _ := time.Parse(time.RFC3339, s.Cursor)
+		current = current.Add(timespan)
+		if current.After(time.Now()) {
+			current = time.Now()
+		}
+		s.Cursor = current.Format(time.RFC3339)
+	} else if user, ok := res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser); ok {
+		s.Cursor = user.CreatedAt.Format(time.RFC3339)
+	}
+	if err := s.Save(ctx); err != nil {
+		s.log("failed to save cursor: %v", true, err)
+	}
+	s.log("cursor updated, new cursor: %v", false, s.Cursor)
+}
+
+func (s *GitHubScraper) mapToUserEntry(user *github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser, existing *GitHubUserEntry) *GitHubUserEntry {
 	now := time.Now()
 	entry := &GitHubUserEntry{
 		DatabaseId: strconv.Itoa(user.DatabaseId),
@@ -130,16 +127,24 @@ func mapToUserEntry(user *github.GetSshPublicKeysSearchSearchResultItemConnectio
 	return entry
 }
 
-func createUserIndex(ctx context.Context, s *Scraper) error {
-	exists, err := s.Elasticsearch.Indices.Exists(userIndex).Do(ctx)
+func (s *GitHubScraper) createUserIndex(ctx context.Context) error {
+	// Set user index to default if not set
+	if s.UserIndex == "" {
+		s.UserIndex = s.getPlatformConfigString("userIndex")
+		if err := s.Save(ctx); err != nil {
+			return fmt.Errorf("failed to save scraper while setting user index: %w", err)
+		}
+	}
+	// Check if user index exists, create it if it doesn't
+	exists, err := s.Elasticsearch.Indices.Exists(s.UserIndex).Do(ctx)
 	if err != nil {
-		return fmt.Errorf("[!][%v] failed to check if user index exists: %w", s.Platform, err)
+		return fmt.Errorf("failed to check if user index exists: %w", err)
 	}
 	if exists {
 		return nil
 	}
 	_, err = s.Elasticsearch.Indices.
-		Create(userIndex).
+		Create(s.UserIndex).
 		Request(&create.Request{
 			Mappings: &types.TypeMapping{
 				Properties: map[string]types.Property{
@@ -166,35 +171,17 @@ func createUserIndex(ctx context.Context, s *Scraper) error {
 		}).
 		Do(ctx)
 	if err != nil {
-		return fmt.Errorf("[!][%v] failed to create user index: %w", s.Platform, err)
+		return fmt.Errorf("failed to create user index: %w", err)
 	}
 	return nil
 }
 
-func saveUnprocessedUser(s *Scraper, user *github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser) error {
-	if _, err := os.Stat("unprocessed_github"); os.IsNotExist(err) {
-		if err := os.Mkdir("unprocessed_github", 0755); err != nil {
-			return fmt.Errorf("[!][%v] failed to create directory for unprocessed user files: %w", s.Platform, err)
-		}
-	}
-	file, err := os.Create(fmt.Sprintf("unprocessed_github/%s.json", user.Login))
-	if err != nil {
-		return fmt.Errorf("[!][%v] failed to save unprocessed user to file: %w", s.Platform, err)
-	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	if err := encoder.Encode(user); err != nil {
-		return fmt.Errorf("[!][%v] failed to encode unprocessed user to json: %w", s.Platform, err)
-	}
-	return nil
-}
-
-func processResponse(ctx context.Context, s *Scraper, res github.GetSshPublicKeysResponse, wg *sync.WaitGroup) {
+func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPublicKeysResponse, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for _, user := range res.Search.Nodes {
 		if user, ok := user.(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser); ok {
 			searchResult, err := s.Elasticsearch.Search().
-				Index(userIndex).
+				Index(s.UserIndex).
 				Request(&search.Request{
 					Query: &types.Query{
 						Match: map[string]types.MatchQuery{
@@ -204,7 +191,7 @@ func processResponse(ctx context.Context, s *Scraper, res github.GetSshPublicKey
 				}).Do(ctx)
 			if err != nil {
 				// If anything goes wrong, we save the unprocessed user to a file
-				err := saveUnprocessedUser(s, user)
+				err := s.saveUnprocessedUser(user.Login, user)
 				if err != nil {
 					panic(err)
 				}
@@ -212,12 +199,12 @@ func processResponse(ctx context.Context, s *Scraper, res github.GetSshPublicKey
 			}
 			var entry *GitHubUserEntry
 			if searchResult.Hits.Total.Value == 0 {
-				entry = mapToUserEntry(user, nil)
-				_, err = s.Elasticsearch.Index(userIndex).
+				entry = s.mapToUserEntry(user, nil)
+				_, err = s.Elasticsearch.Index(s.UserIndex).
 					Request(entry).
 					Do(ctx)
 				if err != nil {
-					err := saveUnprocessedUser(s, user)
+					err := s.saveUnprocessedUser(user.Login, user)
 					if err != nil {
 						panic(err)
 					}
@@ -226,19 +213,19 @@ func processResponse(ctx context.Context, s *Scraper, res github.GetSshPublicKey
 			} else {
 				var existing *GitHubUserEntry
 				if err = json.Unmarshal(searchResult.Hits.Hits[0].Source_, &existing); err != nil {
-					err := saveUnprocessedUser(s, user)
+					err := s.saveUnprocessedUser(user.Login, user)
 					if err != nil {
 						panic(err)
 					}
 					continue
 				}
-				entry = mapToUserEntry(user, entry)
-				_, err = s.Elasticsearch.Index(userIndex).
+				entry = s.mapToUserEntry(user, entry)
+				_, err = s.Elasticsearch.Index(s.UserIndex).
 					Id(*searchResult.Hits.Hits[0].Id_).
 					Request(entry).
 					Do(ctx)
 				if err != nil {
-					err := saveUnprocessedUser(s, user)
+					err := s.saveUnprocessedUser(user.Login, user)
 					if err != nil {
 						panic(err)
 					}
@@ -249,41 +236,51 @@ func processResponse(ctx context.Context, s *Scraper, res github.GetSshPublicKey
 	}
 }
 
-func ScrapePlatform(ctx context.Context, s *Scraper) (bool, error) {
-	if err := createUserIndex(ctx, s); err != nil {
+func (s *GitHubScraper) handleApiError(err error) {
+	if strings.Contains(err.Error(), "You have exceeded a secondary rate limit") {
+		// If we hit the secondary rate limit, we wait for a minute before continuing
+		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("secondaryRateLimitCooldown"))
+		s.log("secondary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
+	} else {
+		// If we encounter any other error, we wait for an hour before continuing
+		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+	}
+}
+
+func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
+	if err := s.createUserIndex(ctx); err != nil {
 		panic(err)
 	}
-	client := newGraphQLClient()
+	client := s.newGraphQLClient()
 	if s.Cursor == "" {
-		s.Cursor = initialCursor.Format(time.RFC3339)
+		s.Cursor = s.getPlatformConfigString("initialCursor")
 		if err := s.Save(ctx); err != nil {
 			panic(err)
 		}
 	}
 
-	log.Printf("[i][%v] starting scraping from %v", s.Platform, s.Cursor)
+	s.log("starting scraping from %v", false, s.Cursor)
 
 	wg := sync.WaitGroup{}
 	var res *github.GetSshPublicKeysResponse
 	var err error
-	rateLimitRemaining := 5000
+	rateLimitRemaining := maxPrimaryRateLimit
+	// If the minimum iteration duration is not set, we set it to the default value
+	if s.MinimumIterationDuration == 0 {
+		s.MinimumIterationDuration = s.getPlatformConfigDuration("minimumIterationDuration")
+	}
 	for {
 		iterationStart := time.Now()
 		// A single request usually costs between 1-2 rate limit points
 		if rateLimitRemaining < 2 {
 			s.ContinueAt = res.RateLimit.ResetAt
-			log.Printf("[i][%v] primary rate limit exceeded, continuing at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
+			s.log("primary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 			return false, nil
 		}
 		// Start by requesting the first page of search results staring from the cursor
-		res, err = github.GetSshPublicKeys(ctx, client, compileQueryString(s.Cursor), "")
+		res, err = github.GetSshPublicKeys(ctx, client, s.compileQueryString(s.Cursor), "")
 		if err != nil {
-			if strings.Contains(err.Error(), "You have exceeded a secondary rate limit") {
-				s.ContinueAt = time.Now().Add(1 * time.Minute)
-				log.Printf("[i][%v] secondary rate limit exceeded, continuing at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
-			} else {
-				s.ContinueAt = time.Now().Add(1 * time.Hour)
-			}
+			s.handleApiError(err)
 			return false, err
 		}
 		rateLimitRemaining = res.RateLimit.Remaining
@@ -293,36 +290,31 @@ func ScrapePlatform(ctx context.Context, s *Scraper) (bool, error) {
 		lastIteration := cursor.Add(timespan).After(time.Now()) && res.Search.UserCount < searchLimit
 
 		wg.Add(1)
-		go processResponse(ctx, s, *res, &wg)
+		go s.processResponse(ctx, *res, &wg)
 
 		// Paginate through all search results until we reach the end (at most 1000 entries)
 		for res.Search.PageInfo.HasNextPage {
 			if rateLimitRemaining < 2 {
-				updateCursor(ctx, s, res)
+				s.updateCursor(ctx, res)
 				s.ContinueAt = res.RateLimit.ResetAt
-				log.Printf("[i][%v] primary rate limit exceeded, continuing at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
+				s.log("primary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 				return false, nil
 			}
-			res, err = github.GetSshPublicKeys(ctx, client, compileQueryString(s.Cursor), res.Search.PageInfo.EndCursor)
+			res, err = github.GetSshPublicKeys(ctx, client, s.compileQueryString(s.Cursor), res.Search.PageInfo.EndCursor)
 			if err != nil {
-				if strings.Contains(err.Error(), "You have exceeded a secondary rate limit") {
-					s.ContinueAt = time.Now().Add(1 * time.Minute)
-					log.Printf("[i][%v] secondary rate limit exceeded, continuing at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
-				} else {
-					s.ContinueAt = time.Now().Add(1 * time.Hour)
-				}
+				s.handleApiError(err)
 				return false, err
 			}
 			rateLimitRemaining = res.RateLimit.Remaining
 
 			wg.Add(1)
-			go processResponse(ctx, s, *res, &wg)
+			go s.processResponse(ctx, *res, &wg)
 		}
 
 		// Wait for processing to complete
 		wg.Wait()
 		// Update the cursor to the last user we have seen
-		updateCursor(ctx, s, res)
+		s.updateCursor(ctx, res)
 		if lastIteration {
 			return true, nil
 		}
@@ -332,8 +324,8 @@ func ScrapePlatform(ctx context.Context, s *Scraper) (bool, error) {
 		// This is not a perfect solution, but it should be good enough for now
 		iterationEnd := time.Now()
 		iterationDuration := iterationEnd.Sub(iterationStart)
-		if iterationDuration < 20*time.Second {
-			time.Sleep(20*time.Second - iterationDuration)
+		if iterationDuration < s.MinimumIterationDuration {
+			time.Sleep(s.MinimumIterationDuration - iterationDuration)
 		}
 	}
 }

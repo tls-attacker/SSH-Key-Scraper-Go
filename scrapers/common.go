@@ -10,17 +10,17 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"github.com/reugn/go-quartz/job"
 	"github.com/reugn/go-quartz/quartz"
+	"github.com/spf13/viper"
 	"log"
+	"os"
 	"time"
 )
-
-const ScraperIndex = "sshks_scrapers"
 
 type Platform string
 
 const (
-	Github    Platform = "github"
-	Gitlab    Platform = "gitlab"
+	GitHub    Platform = "github"
+	GitLab    Platform = "gitlab"
 	Launchpad Platform = "launchpad"
 )
 
@@ -33,12 +33,14 @@ const (
 )
 
 type Scraper struct {
-	databaseID     string
-	Platform       Platform  `json:"platform"`
-	ContinueAt     time.Time `json:"continueAt"`
-	RescrapeAt     time.Time `json:"rescrapeAt"`
-	FullScrapeDone bool      `json:"fullScrapeDone"`
-	Cursor         string    `json:"cursor"`
+	databaseID               string
+	Platform                 Platform      `json:"platform"`
+	ContinueAt               time.Time     `json:"continueAt"`
+	RescrapeAt               time.Time     `json:"rescrapeAt"`
+	FullScrapeDone           bool          `json:"fullScrapeDone"`
+	Cursor                   string        `json:"cursor"`
+	UserIndex                string        `json:"userIndex"`
+	MinimumIterationDuration time.Duration `json:"minimumIterationDuration"`
 
 	Elasticsearch *elasticsearch.TypedClient `json:"-"`
 
@@ -48,10 +50,50 @@ type Scraper struct {
 
 func (s *Scraper) scrape(ctx context.Context) (bool, error) {
 	switch s.Platform {
-	case Github:
-		return ScrapePlatform(ctx, s)
+	case GitHub:
+		scraper := &GitHubScraper{
+			s,
+		}
+		return scraper.Scrape(ctx)
 	default:
-		return false, fmt.Errorf("[!][%v] scraper for platform not yet implemented")
+		return false, fmt.Errorf("scraper for platform not yet implemented")
+	}
+}
+
+func (s *Scraper) saveUnprocessedUser(key string, user any) error {
+	dir := fmt.Sprintf("unprocessed_%s", s.Platform)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.Mkdir(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory for unprocessed user files: %w", err)
+		}
+	}
+	file, err := os.Create(fmt.Sprintf("%s/%s.json", dir, key))
+	if err != nil {
+		return fmt.Errorf("failed to save unprocessed user to file: %w", err)
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+	encoder := json.NewEncoder(file)
+	if err := encoder.Encode(user); err != nil {
+		return fmt.Errorf("failed to encode unprocessed user to json: %w", err)
+	}
+	return nil
+}
+
+func (s *Scraper) getPlatformConfigString(key string) string {
+	return viper.GetString(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
+}
+
+func (s *Scraper) getPlatformConfigDuration(key string) time.Duration {
+	return viper.GetDuration(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
+}
+
+func (s *Scraper) log(format string, error bool, v ...any) {
+	if error {
+		log.Printf(fmt.Sprintf("[!][%v] %s", s.Platform, format), v...)
+	} else {
+		log.Printf(fmt.Sprintf("[i][%v] %s", s.Platform, format), v...)
 	}
 }
 
@@ -59,17 +101,17 @@ func (s *Scraper) getFullScrapeJob() quartz.Job {
 	return job.NewFunctionJobWithDesc(func(ctx context.Context) (interface{}, error) {
 		done, err := s.scrape(ctx)
 		if err != nil {
-			log.Printf("[!][%v] error occured during scrape run: %v", s.Platform, err)
+			s.log("error occured during scrape run: %v", true, err)
 		} else if done {
-			log.Printf("[i][%v] full scrape done, scheduling reset and incremental jobs", s.Platform)
+			s.log("full scrape done, scheduling reset and incremental jobs", false)
 			s.FullScrapeDone = true
 			// Next full scrape in 30 days
-			s.RescrapeAt = time.Now().Add(30 * 24 * time.Hour)
+			s.RescrapeAt = time.Now().Add(s.getPlatformConfigDuration("fullInterval"))
 			// Next incremental scrape in 24 hours
-			s.ContinueAt = time.Now().Add(24 * time.Hour)
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("incrementalInterval"))
 			s.scheduleResetJob()
 		} else {
-			log.Printf("[i][%v] full scrape not complete, rescheduling job at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
+			s.log("full scrape not complete, rescheduling job at %v", false, s.ContinueAt.Format(time.RFC3339))
 		}
 		// Schedule next scrape job
 		s.scheduleScrapeJob()
@@ -81,9 +123,9 @@ func (s *Scraper) getIncrementalScrapeJob() quartz.Job {
 	return job.NewFunctionJobWithDesc(func(ctx context.Context) (interface{}, error) {
 		_, err := s.scrape(ctx)
 		if err != nil {
-			log.Printf("[!][%v] error occured during scrape run: %v", s.Platform, err)
+			s.log("error occured during scrape run: %v", true, err)
 		} else {
-			log.Printf("[i][%v] incremental scrape done, rescheduling incremental scrape job at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
+			s.log("incremental scrape done, rescheduling incremental scrape job at %v", false, s.ContinueAt.Format(time.RFC3339))
 		}
 		s.scheduleScrapeJob()
 		return nil, s.Save(ctx)
@@ -107,17 +149,17 @@ func (s *Scraper) scheduleScrapeJob() {
 		scrapeJob = s.getIncrementalScrapeJob()
 		jobKey = s.GetJobKey(IncrementalJob)
 		if immediate {
-			log.Printf("[i][%v] starting incremental scrape job immediately", s.Platform)
+			s.log("starting incremental scrape job immediately", false)
 		} else {
-			log.Printf("[i][%v] scheduling incremental scrape job at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
+			s.log("scheduling incremental scrape job at %v", false, s.ContinueAt.Format(time.RFC3339))
 		}
 	} else {
 		scrapeJob = s.getFullScrapeJob()
 		jobKey = s.GetJobKey(FullJob)
 		if immediate {
-			log.Printf("[i][%v] starting full scrape job immediately", s.Platform)
+			s.log("starting full scrape job immediately", false)
 		} else {
-			log.Printf("[i][%v] scheduling full scrape job at %v", s.Platform, s.ContinueAt.Format(time.RFC3339))
+			s.log("scheduling full scrape job at %v", false, s.ContinueAt.Format(time.RFC3339))
 		}
 	}
 	err := s.scheduler.ScheduleJob(quartz.NewJobDetail(scrapeJob, jobKey), trigger)
@@ -137,7 +179,8 @@ func (s *Scraper) getResetJob() quartz.Job {
 			incrementalJobKey := s.GetJobKey(IncrementalJob)
 			err := s.scheduler.DeleteJob(incrementalJobKey)
 			if err != nil {
-				log.Fatalf("[!][%v] failed to delete incremental scrape job: %v", s.Platform, err)
+				s.log("failed to delete incremental scrape job: %v", true, err)
+				panic(err)
 			}
 			// Schedule full scrape job
 			s.scheduleScrapeJob()
@@ -148,29 +191,33 @@ func (s *Scraper) getResetJob() quartz.Job {
 
 func (s *Scraper) scheduleResetJob() {
 	if s.FullScrapeDone {
-		log.Printf("[i][%v] full scrape completed, scheduling reset job at %v", s.Platform, s.RescrapeAt.Format(time.RFC3339))
+		s.log("full scrape completed, scheduling reset job at %v", false, s.RescrapeAt.Format(time.RFC3339))
 		err := s.scheduler.ScheduleJob(quartz.NewJobDetail(
 			s.getResetJob(),
 			s.GetJobKey(ResetJob)),
 			quartz.NewRunOnceTrigger(s.RescrapeAt.Sub(time.Now())))
 		if err != nil {
-			log.Fatalf("[!][%v] failed to schedule reset job: %v", s.Platform, err)
+			s.log("failed to schedule reset job: %v", true, err)
+			panic(err)
 		}
 	} else {
-		log.Printf("[~][%v] tried to schedule reset job before full scrape completed", s.Platform)
+		s.log("tried to schedule reset job before full scrape completed", true)
 	}
 }
 
 func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Platform) (*Scraper, error) {
-	if exists, err := es.Indices.Exists(ScraperIndex).Do(ctx); !exists {
-		_, err := es.Indices.Create(ScraperIndex).Request(&create.Request{
+	scraperIndex := viper.GetString("scraperIndex")
+	if exists, err := es.Indices.Exists(scraperIndex).Do(ctx); !exists {
+		_, err := es.Indices.Create(scraperIndex).Request(&create.Request{
 			Mappings: &types.TypeMapping{
 				Properties: map[string]types.Property{
-					"platform":       types.NewKeywordProperty(),
-					"continueAt":     types.NewDateProperty(),
-					"rescrapeAt":     types.NewDateProperty(),
-					"fullScrapeDone": types.NewBooleanProperty(),
-					"cursor":         types.NewTextProperty(),
+					"platform":                 types.NewKeywordProperty(),
+					"continueAt":               types.NewDateProperty(),
+					"rescrapeAt":               types.NewDateProperty(),
+					"fullScrapeDone":           types.NewBooleanProperty(),
+					"cursor":                   types.NewTextProperty(),
+					"userIndex":                types.NewKeywordProperty(),
+					"minimumIterationDuration": types.NewLongNumberProperty(),
 				},
 			},
 			Settings: &types.IndexSettings{
@@ -185,7 +232,7 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 		return nil, fmt.Errorf("failed to check if scraper index exists: %w", err)
 	}
 	res, err := es.Search().
-		Index(ScraperIndex).
+		Index(scraperIndex).
 		Request(&search.Request{
 			Query: &types.Query{
 				Match: map[string]types.MatchQuery{
@@ -204,6 +251,8 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 			Elasticsearch:  es,
 			context:        ctx,
 		}
+		scraper.UserIndex = scraper.getPlatformConfigString("userIndex")
+		scraper.MinimumIterationDuration = scraper.getPlatformConfigDuration("minimumIterationDuration")
 		err = scraper.Save(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create new scraper: %w", err)
@@ -220,14 +269,15 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 }
 
 func (s *Scraper) Save(ctx context.Context) error {
+	scraperIndex := viper.GetString("scraperIndex")
 	if s.databaseID != "" {
-		_, err := s.Elasticsearch.Index(ScraperIndex).Id(s.databaseID).Request(s).Do(ctx)
+		_, err := s.Elasticsearch.Index(scraperIndex).Id(s.databaseID).Request(s).Do(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to update scraper for platform '%v': %w", s.Platform, err)
 		}
 		return nil
 	} else {
-		res, err := s.Elasticsearch.Index(ScraperIndex).Request(s).Do(ctx)
+		res, err := s.Elasticsearch.Index(scraperIndex).Request(s).Do(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to insert scraper for platform '%v': %w", s.Platform, err)
 		}
