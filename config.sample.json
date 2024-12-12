@@ -22,6 +22,16 @@
       "fullInterval": "720h",
       "secondaryRateLimitCooldown": "1m",
       "apiErrorCooldown": "1h"
+    },
+    "gitlab": {
+      "enabled": true,
+      "token": "",
+      "minimumIterationDuration": "0s",
+      "userIndex": "sshks_gitlab_users",
+      "incrementalInterval": "24h",
+      "fullInterval": "720h",
+      "concurrentRequests": 10,
+      "apiErrorCooldown": "5m"
     }
   }
 }

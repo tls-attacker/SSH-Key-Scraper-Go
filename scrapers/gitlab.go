@@ -17,9 +17,6 @@ import (
 	"time"
 )
 
-// concurrentRequests is the number of concurrent requests to make to the GitLab REST API
-const concurrentRequests = 10
-
 type GitLabScraper struct {
 	*Scraper
 }
@@ -312,6 +309,7 @@ func (s *GitLabScraper) Scrape(ctx context.Context) (bool, error) {
 	s.log("starting scraping from %v", false, s.Cursor)
 
 	wg := sync.WaitGroup{}
+	concurrentRequests := s.getPlatformConfigInt("concurrentRequests")
 	var res *gitlab.GetUsersResponse
 	var err error
 	for {

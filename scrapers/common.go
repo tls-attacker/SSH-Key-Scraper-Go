@@ -90,6 +90,10 @@ func (s *Scraper) getPlatformConfigString(key string) string {
 	return viper.GetString(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
+func (s *Scraper) getPlatformConfigInt(key string) int {
+	return viper.GetInt(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
+}
+
 func (s *Scraper) getPlatformConfigDuration(key string) time.Duration {
 	return viper.GetDuration(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
