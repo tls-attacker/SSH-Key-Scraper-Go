@@ -55,6 +55,11 @@ func (s *Scraper) scrape(ctx context.Context) (bool, error) {
 			s,
 		}
 		return scraper.Scrape(ctx)
+	case GitLab:
+		scraper := &GitLabScraper{
+			s,
+		}
+		return scraper.Scrape(ctx)
 	default:
 		return false, fmt.Errorf("scraper for platform not yet implemented")
 	}
@@ -262,6 +267,8 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 			return nil, fmt.Errorf("failed to unmarshal github scraper: %w", err)
 		}
 		scraper.databaseID = *res.Hits.Hits[0].Id_
+		scraper.UserIndex = scraper.getPlatformConfigString("userIndex")
+		scraper.MinimumIterationDuration = scraper.getPlatformConfigDuration("minimumIterationDuration")
 		scraper.Elasticsearch = es
 		scraper.context = ctx
 	}

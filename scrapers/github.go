@@ -145,16 +145,20 @@ func (s *GitHubScraper) createUserIndex(ctx context.Context) error {
 					"login":      types.NewKeywordProperty(),
 					"createdAt":  types.NewDateProperty(),
 					"updatedAt":  types.NewDateProperty(),
-					"visitedAt":  types.NewDateProperty(),
-					"deleted":    types.NewBooleanProperty(),
 					"publicKeys": &types.NestedProperty{
 						Properties: map[string]types.Property{
 							"key":         types.NewTextProperty(),
 							"fingerprint": types.NewTextProperty(),
-							"visitedAt":   types.NewDateProperty(),
-							"deleted":     types.NewBooleanProperty(),
+
+							// Fields added by the scraper
+							"visitedAt": types.NewDateProperty(),
+							"deleted":   types.NewBooleanProperty(),
 						},
 					},
+
+					// Fields added by the scraper
+					"visitedAt": types.NewDateProperty(),
+					"deleted":   types.NewBooleanProperty(),
 				},
 			},
 			Settings: &types.IndexSettings{
@@ -262,7 +266,7 @@ func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
 		iterationStart := time.Now()
 		// A single request usually costs between 1-2 rate limit points
 		if rateLimitRemaining < 2 {
-			s.ContinueAt = res.RateLimit.ResetAt
+			s.ContinueAt = res.RateLimit.ResetAt.Add(1 * time.Minute)
 			s.log("primary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 			return false, nil
 		}
@@ -285,7 +289,7 @@ func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
 		for res.Search.PageInfo.HasNextPage {
 			if rateLimitRemaining < 2 {
 				s.updateCursor(ctx, res)
-				s.ContinueAt = res.RateLimit.ResetAt
+				s.ContinueAt = res.RateLimit.ResetAt.Add(1 * time.Minute)
 				s.log("primary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 				return false, nil
 			}

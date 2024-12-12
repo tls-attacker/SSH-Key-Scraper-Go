@@ -72,5 +72,14 @@ func main() {
 		scraper.Register(sched)
 	}
 
+	// GitLab
+	if viper.GetBool("scrapers.gitlab.enabled") {
+		scraper, err := scrapers.LoadScraper(ctx, es, scrapers.GitLab)
+		if err != nil {
+			log.Fatalf("[!] failed to load gitlab scraper from database: %s", err.Error())
+		}
+		scraper.Register(sched)
+	}
+
 	<-ctx.Done()
 }

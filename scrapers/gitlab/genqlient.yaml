@@ -1,0 +1,13 @@
+# Default genqlient config; for full documentation see:
+# https://github.com/Khan/genqlient/blob/main/docs/genqlient.yaml
+schema: schema.graphql
+operations:
+- operations.graphql
+generated: generated.go
+bindings:
+  Date:
+    type: time.Time
+    marshaler: SSH-Key-Scraper/scrapers/gitlab.MarshalDate
+    unmarshaler: SSH-Key-Scraper/scrapers/gitlab.UnmarshalDate
+  Time:
+    type: time.Time
