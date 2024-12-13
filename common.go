@@ -33,14 +33,13 @@ const (
 )
 
 type Scraper struct {
-	databaseID               string
-	Platform                 Platform      `json:"platform"`
-	ContinueAt               time.Time     `json:"continueAt"`
-	RescrapeAt               time.Time     `json:"rescrapeAt"`
-	FullScrapeDone           bool          `json:"fullScrapeDone"`
-	Cursor                   string        `json:"cursor"`
-	UserIndex                string        `json:"userIndex"`
-	MinimumIterationDuration time.Duration `json:"minimumIterationDuration"`
+	databaseID     string
+	Platform       Platform  `json:"platform"`
+	ContinueAt     time.Time `json:"continueAt"`
+	RescrapeAt     time.Time `json:"rescrapeAt"`
+	FullScrapeDone bool      `json:"fullScrapeDone"`
+	Cursor         string    `json:"cursor"`
+	UserIndex      string    `json:"userIndex"`
 
 	Elasticsearch *elasticsearch.TypedClient `json:"-"`
 
@@ -261,7 +260,6 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 			context:        ctx,
 		}
 		scraper.UserIndex = scraper.getPlatformConfigString("userIndex")
-		scraper.MinimumIterationDuration = scraper.getPlatformConfigDuration("minimumIterationDuration")
 		err = scraper.Save(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create new scraper: %w", err)
@@ -271,8 +269,6 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 			return nil, fmt.Errorf("failed to unmarshal github scraper: %w", err)
 		}
 		scraper.databaseID = *res.Hits.Hits[0].Id_
-		scraper.UserIndex = scraper.getPlatformConfigString("userIndex")
-		scraper.MinimumIterationDuration = scraper.getPlatformConfigDuration("minimumIterationDuration")
 		scraper.Elasticsearch = es
 		scraper.context = ctx
 	}

@@ -58,6 +58,7 @@ func (t *githubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (s *GitHubScraper) newGraphQLClient() graphql.Client {
 	httpClient := http.Client{
+		Timeout: s.getPlatformConfigDuration("timeout"),
 		Transport: &githubTransport{
 			token:   s.getPlatformConfigString("token"),
 			wrapped: http.DefaultTransport,
@@ -262,6 +263,7 @@ func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
 	var res *github.GetSshPublicKeysResponse
 	var err error
 	rateLimitRemaining := maxPrimaryRateLimit
+	minimumIterationDuration := s.getPlatformConfigDuration("minimumIterationDuration")
 	for {
 		iterationStart := time.Now()
 		// A single request usually costs between 1-2 rate limit points
@@ -317,8 +319,8 @@ func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
 		// This is not a perfect solution, but it should be good enough for now
 		iterationEnd := time.Now()
 		iterationDuration := iterationEnd.Sub(iterationStart)
-		if iterationDuration < s.MinimumIterationDuration {
-			time.Sleep(s.MinimumIterationDuration - iterationDuration)
+		if iterationDuration < minimumIterationDuration {
+			time.Sleep(minimumIterationDuration - iterationDuration)
 		}
 	}
 }

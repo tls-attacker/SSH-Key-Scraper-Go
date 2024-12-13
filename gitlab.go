@@ -69,6 +69,7 @@ func (t *gitlabTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (s *GitLabScraper) newGraphQLClient() graphql.Client {
 	httpClient := http.Client{
+		Timeout: s.getPlatformConfigDuration("timeout"),
 		Transport: &gitlabTransport{
 			token:   s.getPlatformConfigString("token"),
 			graphql: true,
@@ -80,6 +81,7 @@ func (s *GitLabScraper) newGraphQLClient() graphql.Client {
 
 func (s *GitLabScraper) newRestClient() *http.Client {
 	return &http.Client{
+		Timeout: s.getPlatformConfigDuration("timeout"),
 		Transport: &gitlabTransport{
 			token:   s.getPlatformConfigString("token"),
 			graphql: false,
@@ -345,6 +347,7 @@ func (s *GitLabScraper) Scrape(ctx context.Context) (bool, error) {
 	concurrentRequests := s.getPlatformConfigInt("concurrentRequests")
 	retry := 0
 	maxRetries := s.getPlatformConfigInt("maxRetries")
+	minimumIterationDuration := s.getPlatformConfigDuration("minimumIterationDuration")
 	var res *gitlab.GetUsersResponse
 	var err error
 	for {
@@ -390,8 +393,8 @@ func (s *GitLabScraper) Scrape(ctx context.Context) (bool, error) {
 		}
 		iterationEnd := time.Now()
 		iterationDuration := iterationEnd.Sub(iterationStart)
-		if iterationDuration < s.MinimumIterationDuration {
-			time.Sleep(s.MinimumIterationDuration - iterationDuration)
+		if iterationDuration < minimumIterationDuration {
+			time.Sleep(minimumIterationDuration - iterationDuration)
 		}
 	}
 }

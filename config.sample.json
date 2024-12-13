@@ -15,6 +15,7 @@
     "github": {
       "enabled": true,
       "token": "",
+      "timeout": "30s",
       "minimumIterationDuration": "20s",
       "userIndex": "sshks_github_users",
       "initialCursor": "2007-10-20T00:00:00Z",
@@ -26,6 +27,7 @@
     "gitlab": {
       "enabled": true,
       "token": "",
+      "timeout": "30s",
       "minimumIterationDuration": "0s",
       "userIndex": "sshks_gitlab_users",
       "incrementalInterval": "24h",
