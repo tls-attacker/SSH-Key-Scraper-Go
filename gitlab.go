@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/Khan/genqlient/graphql"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/indices/create"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"net/http"
 	"strconv"
@@ -17,7 +16,19 @@ import (
 	"time"
 )
 
-type GitLabPublicKey struct {
+const (
+	MetaGitlabUserRemoteId       = "remoteId"
+	MetaGitlabUserState          = "state"
+	MetaGitlabUserCreatedAt      = "createdAt"
+	MetaGitlabUserLastActivityOn = "lastActivityOn"
+	MetaGitlabPublicKeyRemoteId  = "remoteId"
+	MetaGitlabPublicKeyTitle     = "title"
+	MetaGitlabPublicKeyUsageType = "usageType"
+	MetaGitlabPublicKeyCreatedAt = "createdAt"
+	MetaGitlabPublicKeyExpiresAt = "expiresAt"
+)
+
+type GitlabSshKeysApiEntry struct {
 	Id        int64     `json:"id"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`
@@ -26,36 +37,37 @@ type GitLabPublicKey struct {
 	UsageType string    `json:"usage_type"`
 }
 
-type GitLabScraper struct {
+type GitlabScraper struct {
 	*Scraper
-}
-
-type GitLabPublicKeyEntry struct {
-	DatabaseID int64     `json:"databaseId"`
-	Key        string    `json:"key"`
-	Title      string    `json:"title"`
-	UsageType  string    `json:"usageType"`
-	CreatedAt  time.Time `json:"createdAt"`
-	ExpiresAt  time.Time `json:"expiresAt"`
-	VisitedAt  time.Time `json:"visitedAt"`
-	Deleted    bool      `json:"deleted"`
-}
-
-type GitLabUserEntry struct {
-	DatabaseID     string                 `json:"databaseId"`
-	Username       string                 `json:"username"`
-	State          string                 `json:"state"`
-	CreatedAt      time.Time              `json:"createdAt"`
-	LastActivityOn time.Time              `json:"lastActivityOn"`
-	VisitedAt      time.Time              `json:"visitedAt"`
-	Deleted        bool                   `json:"deleted"`
-	PublicKeys     []GitLabPublicKeyEntry `json:"publicKeys"`
 }
 
 type gitlabTransport struct {
 	token   string
 	graphql bool
 	wrapped http.RoundTripper
+}
+
+func (s *GitlabScraper) getUserMetadataMapping() *types.ObjectProperty {
+	return &types.ObjectProperty{
+		Properties: map[string]types.Property{
+			MetaGitlabUserRemoteId:       types.NewKeywordProperty(),
+			MetaGitlabUserState:          types.NewKeywordProperty(),
+			MetaGitlabUserCreatedAt:      types.NewDateProperty(),
+			MetaGitlabUserLastActivityOn: types.NewDateProperty(),
+		},
+	}
+}
+
+func (s *GitlabScraper) getPublicKeyMetadataMapping() *types.ObjectProperty {
+	return &types.ObjectProperty{
+		Properties: map[string]types.Property{
+			MetaGitlabPublicKeyRemoteId:  types.NewLongNumberProperty(),
+			MetaGitlabPublicKeyTitle:     types.NewTextProperty(),
+			MetaGitlabPublicKeyUsageType: types.NewKeywordProperty(),
+			MetaGitlabPublicKeyCreatedAt: types.NewDateProperty(),
+			MetaGitlabPublicKeyExpiresAt: types.NewDateProperty(),
+		},
+	}
 }
 
 func (t *gitlabTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -67,7 +79,7 @@ func (t *gitlabTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.wrapped.RoundTrip(req)
 }
 
-func (s *GitLabScraper) newGraphQLClient() graphql.Client {
+func (s *GitlabScraper) newGraphQLClient() graphql.Client {
 	httpClient := http.Client{
 		Timeout: s.getPlatformConfigDuration("timeout"),
 		Transport: &gitlabTransport{
@@ -79,7 +91,7 @@ func (s *GitLabScraper) newGraphQLClient() graphql.Client {
 	return graphql.NewClient("https://gitlab.com/api/graphql", &httpClient)
 }
 
-func (s *GitLabScraper) newRestClient() *http.Client {
+func (s *GitlabScraper) newRestClient() *http.Client {
 	return &http.Client{
 		Timeout: s.getPlatformConfigDuration("timeout"),
 		Transport: &gitlabTransport{
@@ -90,12 +102,12 @@ func (s *GitLabScraper) newRestClient() *http.Client {
 	}
 }
 
-func (s *GitLabScraper) gidToUserId(gid string) (int, error) {
+func (s *GitlabScraper) gidToUserId(gid string) (int, error) {
 	parts := strings.Split(gid, "/")
 	return strconv.Atoi(parts[len(parts)-1])
 }
 
-func (s *GitLabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore) {
+func (s *GitlabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore) {
 	if last == nil {
 		return
 	}
@@ -120,99 +132,58 @@ func (s *GitLabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersU
 	s.log("cursor updated, new cursor: %v", false, s.Cursor)
 }
 
-func (s *GitLabScraper) mapToUserEntry(user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys *[]GitLabPublicKey, existing *GitLabUserEntry) *GitLabUserEntry {
+func (s *GitlabScraper) mapToUserEntry(user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys *[]GitlabSshKeysApiEntry, existing *UserEntry) *UserEntry {
 	now := time.Now()
-	entry := &GitLabUserEntry{
-		DatabaseID:     user.Id,
-		Username:       user.Username,
-		State:          string(user.State),
-		CreatedAt:      user.CreatedAt,
-		LastActivityOn: user.LastActivityOn,
-		VisitedAt:      now,
-		Deleted:        false,
+	entry := &UserEntry{
+		Username: user.Username,
+		Metadata: map[string]any{
+			MetaGitlabUserRemoteId:       user.Id,
+			MetaGitlabUserState:          string(user.State),
+			MetaGitlabUserCreatedAt:      user.CreatedAt,
+			MetaGitlabUserLastActivityOn: user.LastActivityOn,
+		},
+		VisitedAt: now,
+		Deleted:   false,
 	}
 	if existing != nil {
 		entry.PublicKeys = existing.PublicKeys
 	} else {
-		entry.PublicKeys = []GitLabPublicKeyEntry{}
+		entry.PublicKeys = []PublicKeyEntry{}
 	}
 	for _, key := range *publicKeys {
 		exists := false
 		for _, existingKey := range entry.PublicKeys {
 			if existingKey.Key == key.Key {
 				exists = true
+				// Update metadata
+				existingKey.Metadata[MetaGitlabPublicKeyRemoteId] = key.Id
+				existingKey.Metadata[MetaGitlabPublicKeyTitle] = key.Title
+				existingKey.Metadata[MetaGitlabPublicKeyUsageType] = key.UsageType
+				existingKey.Metadata[MetaGitlabPublicKeyCreatedAt] = key.CreatedAt
+				existingKey.Metadata[MetaGitlabPublicKeyExpiresAt] = key.ExpiresAt
 				existingKey.Deleted = false
 				existingKey.VisitedAt = now
 			}
 		}
 		if !exists {
-			entry.PublicKeys = append(entry.PublicKeys, GitLabPublicKeyEntry{
-				DatabaseID: key.Id,
-				Key:        key.Key,
-				Title:      key.Title,
-				UsageType:  key.UsageType,
-				CreatedAt:  key.CreatedAt,
-				ExpiresAt:  key.ExpiresAt,
-				VisitedAt:  now,
-				Deleted:    false,
+			entry.PublicKeys = append(entry.PublicKeys, PublicKeyEntry{
+				Key: key.Key,
+				Metadata: map[string]any{
+					MetaGitlabPublicKeyRemoteId:  key.Id,
+					MetaGitlabPublicKeyTitle:     key.Title,
+					MetaGitlabPublicKeyUsageType: key.UsageType,
+					MetaGitlabPublicKeyCreatedAt: key.CreatedAt,
+					MetaGitlabPublicKeyExpiresAt: key.ExpiresAt,
+				},
+				VisitedAt: now,
+				Deleted:   false,
 			})
 		}
 	}
 	return entry
 }
 
-func (s *GitLabScraper) createUserIndex(ctx context.Context) error {
-	// Check if user index exists, create it if it doesn't
-	exists, err := s.Elasticsearch.Indices.Exists(s.UserIndex).Do(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to check if user index exists: %w", err)
-	}
-	if exists {
-		return nil
-	}
-	_, err = s.Elasticsearch.Indices.
-		Create(s.UserIndex).
-		Request(&create.Request{
-			Mappings: &types.TypeMapping{
-				Properties: map[string]types.Property{
-					"databaseId":     types.NewKeywordProperty(),
-					"username":       types.NewKeywordProperty(),
-					"state":          types.NewKeywordProperty(),
-					"createdAt":      types.NewDateProperty(),
-					"lastActivityOn": types.NewDateProperty(),
-					"publicKeys": &types.NestedProperty{
-						Properties: map[string]types.Property{
-							"databaseId": types.NewLongNumberProperty(),
-							"key":        types.NewTextProperty(),
-							"title":      types.NewTextProperty(),
-							"usageType":  types.NewKeywordProperty(),
-							"createdAt":  types.NewDateProperty(),
-							"expiresAt":  types.NewDateProperty(),
-
-							// Fields added by the scraper
-							"visitedAt": types.NewDateProperty(),
-							"deleted":   types.NewBooleanProperty(),
-						},
-					},
-
-					// Fields added by the scraper
-					"visitedAt": types.NewDateProperty(),
-					"deleted":   types.NewBooleanProperty(),
-				},
-			},
-			Settings: &types.IndexSettings{
-				NumberOfShards:   "1",
-				NumberOfReplicas: "2",
-			},
-		}).
-		Do(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create user index: %w", err)
-	}
-	return nil
-}
-
-func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys *[]GitLabPublicKey) {
+func (s *GitlabScraper) processResponse(ctx context.Context, user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys *[]GitlabSshKeysApiEntry) {
 	searchResult, err := s.Elasticsearch.Search().
 		Index(s.UserIndex).
 		Request(&search.Request{
@@ -231,7 +202,7 @@ func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 		}
 		return
 	}
-	var entry *GitLabUserEntry
+	var entry *UserEntry
 	if searchResult.Hits.Total.Value == 0 {
 		entry = s.mapToUserEntry(user, publicKeys, nil)
 		_, err = s.Elasticsearch.Index(s.UserIndex).
@@ -246,7 +217,7 @@ func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 			return
 		}
 	} else {
-		var existing GitLabUserEntry
+		var existing UserEntry
 		if err = json.Unmarshal(searchResult.Hits.Hits[0].Source_, &existing); err != nil {
 			s.log("failed to unmarshal user %v from elasticsearch: %v", true, user.Username, err)
 			err := s.saveUnprocessedUser(user.Username, user)
@@ -271,7 +242,7 @@ func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 	}
 }
 
-func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, failures chan<- error, wg *sync.WaitGroup) {
+func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, failures chan<- error, wg *sync.WaitGroup) {
 	defer wg.Done()
 	restClient := s.newRestClient()
 	maxRetries := s.getPlatformConfigInt("maxRetries")
@@ -323,7 +294,7 @@ func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 			failures <- fmt.Errorf("unexpected content type: %v", res.Header.Get("Content-Type"))
 			return
 		}
-		var publicKeys []GitLabPublicKey
+		var publicKeys []GitlabSshKeysApiEntry
 		if err := json.NewDecoder(res.Body).Decode(&publicKeys); err != nil {
 			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
 			s.log("failed to decode public keys from json for user %v: %v", true, user.Username, err)
@@ -333,10 +304,7 @@ func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 	}
 }
 
-func (s *GitLabScraper) Scrape(ctx context.Context) (bool, error) {
-	if err := s.createUserIndex(ctx); err != nil {
-		panic(err)
-	}
+func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 	gqlClient := s.newGraphQLClient()
 	if s.Cursor == "" {
 		s.Cursor = s.getPlatformConfigString("initialCursor")

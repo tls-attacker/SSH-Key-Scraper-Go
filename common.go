@@ -19,8 +19,8 @@ import (
 type Platform string
 
 const (
-	GitHub    Platform = "github"
-	GitLab    Platform = "gitlab"
+	Github    Platform = "github"
+	Gitlab    Platform = "gitlab"
 	Launchpad Platform = "launchpad"
 )
 
@@ -47,21 +47,51 @@ type Scraper struct {
 	scheduler quartz.Scheduler
 }
 
-func (s *Scraper) scrape(ctx context.Context) (bool, error) {
+type UserEntry struct {
+	Username   string           `json:"username"`
+	PublicKeys []PublicKeyEntry `json:"publicKeys"`
+	Metadata   map[string]any   `json:"metadata"`
+	VisitedAt  time.Time        `json:"visitedAt"`
+	Deleted    bool             `json:"deleted"`
+}
+
+type PublicKeyEntry struct {
+	Key       string         `json:"key"`
+	Metadata  map[string]any `json:"metadata"`
+	VisitedAt time.Time      `json:"visitedAt"`
+	Deleted   bool           `json:"deleted"`
+}
+
+func (s *Scraper) ScrapePlatform(ctx context.Context) (bool, error) {
 	switch s.Platform {
-	case GitHub:
-		scraper := &GitHubScraper{
+	case Github:
+		scraper := &GithubScraper{
 			s,
 		}
+		if err := s.createUserIndex(ctx,
+			scraper.getUserMetadataMapping(),
+			scraper.getPublicKeyMetadataMapping()); err != nil {
+			panic(err)
+		}
 		return scraper.Scrape(ctx)
-	case GitLab:
-		scraper := &GitLabScraper{
+	case Gitlab:
+		scraper := &GitlabScraper{
 			s,
+		}
+		if err := s.createUserIndex(ctx,
+			scraper.getUserMetadataMapping(),
+			scraper.getPublicKeyMetadataMapping()); err != nil {
+			panic(err)
 		}
 		return scraper.Scrape(ctx)
 	case Launchpad:
 		scraper := &LaunchpadScraper{
 			s,
+		}
+		if err := s.createUserIndex(ctx,
+			scraper.getUserMetadataMapping(),
+			scraper.getPublicKeyMetadataMapping()); err != nil {
+			panic(err)
 		}
 		return scraper.Scrape(ctx)
 	default:
@@ -110,9 +140,49 @@ func (s *Scraper) log(format string, error bool, v ...any) {
 	}
 }
 
+func (s *Scraper) createUserIndex(ctx context.Context, userMeta *types.ObjectProperty, publicKeyMeta *types.ObjectProperty) error {
+	// Check if user index exists, create it if it doesn't
+	exists, err := s.Elasticsearch.Indices.Exists(s.UserIndex).Do(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check if user index exists: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	_, err = s.Elasticsearch.Indices.
+		Create(s.UserIndex).
+		Request(&create.Request{
+			Mappings: &types.TypeMapping{
+				Properties: map[string]types.Property{
+					"username": types.NewKeywordProperty(),
+					"publicKeys": &types.NestedProperty{
+						Properties: map[string]types.Property{
+							"key":       types.NewTextProperty(),
+							"metadata":  publicKeyMeta,
+							"visitedAt": types.NewDateProperty(),
+							"deleted":   types.NewBooleanProperty(),
+						},
+					},
+					"metadata":  userMeta,
+					"visitedAt": types.NewDateProperty(),
+					"deleted":   types.NewBooleanProperty(),
+				},
+			},
+			Settings: &types.IndexSettings{
+				NumberOfShards:   "1",
+				NumberOfReplicas: "2",
+			},
+		}).
+		Do(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create user index: %w", err)
+	}
+	return nil
+}
+
 func (s *Scraper) getFullScrapeJob() quartz.Job {
 	return job.NewFunctionJobWithDesc(func(ctx context.Context) (interface{}, error) {
-		done, err := s.scrape(ctx)
+		done, err := s.ScrapePlatform(ctx)
 		if err != nil {
 			s.log("error occured during scrape run: %v", true, err)
 		} else if done {
@@ -134,7 +204,7 @@ func (s *Scraper) getFullScrapeJob() quartz.Job {
 
 func (s *Scraper) getIncrementalScrapeJob() quartz.Job {
 	return job.NewFunctionJobWithDesc(func(ctx context.Context) (interface{}, error) {
-		_, err := s.scrape(ctx)
+		_, err := s.ScrapePlatform(ctx)
 		if err != nil {
 			s.log("error occured during scrape run: %v", true, err)
 		} else {

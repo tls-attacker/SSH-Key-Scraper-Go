@@ -64,7 +64,7 @@ func main() {
 
 	// GitHub
 	if viper.GetBool("scrapers.github.enabled") {
-		scraper, err := LoadScraper(ctx, es, GitHub)
+		scraper, err := LoadScraper(ctx, es, Github)
 		if err != nil {
 			log.Fatalf("[!] failed to load github scraper from database: %s", err.Error())
 		}
@@ -73,7 +73,7 @@ func main() {
 
 	// GitLab
 	if viper.GetBool("scrapers.gitlab.enabled") {
-		scraper, err := LoadScraper(ctx, es, GitLab)
+		scraper, err := LoadScraper(ctx, es, Gitlab)
 		if err != nil {
 			log.Fatalf("[!] failed to load gitlab scraper from database: %s", err.Error())
 		}

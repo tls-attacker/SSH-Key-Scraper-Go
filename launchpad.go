@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/indices/create"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"net/http"
 	"net/url"
@@ -17,6 +16,17 @@ import (
 
 // requestedTimespanLaunchpad specifies the timespan which we request in a single request from the search API (72 hours)
 const requestedTimespanLaunchpad = 3 * 24 * time.Hour
+
+const (
+	MetaLaunchpadUserIsValid       = "isValid"
+	MetaLaunchpadUserIsTeam        = "isTeam"
+	MetaLaunchpadUserStatus        = "status"
+	MetaLaunchpadUserVisibility    = "visibility"
+	MetaLaunchpadUserCreatedAt     = "createdAt"
+	MetaLaunchpadPublicKeyRemoteId = "remoteId"
+	MetaLaunchpadPublicKeyKeyType  = "keyType"
+	MetaLaunchpadPublicKeyComment  = "comment"
+)
 
 type LaunchpadPeopleApiResponse struct {
 	Start              int                       `json:"start"`
@@ -60,25 +70,26 @@ type LaunchpadScraper struct {
 	*Scraper
 }
 
-type LaunchpadUserEntry struct {
-	Username   string                    `json:"username"`
-	IsValid    bool                      `json:"isValid"`
-	IsTeam     bool                      `json:"isTeam"`
-	Status     string                    `json:"status"`
-	Visibility string                    `json:"visibility"`
-	CreatedAt  time.Time                 `json:"createdAt"`
-	VisitedAt  time.Time                 `json:"visitedAt"`
-	Deleted    bool                      `json:"deleted"`
-	PublicKeys []LaunchpadPublicKeyEntry `json:"publicKeys"`
+func (s *LaunchpadScraper) getUserMetadataMapping() *types.ObjectProperty {
+	return &types.ObjectProperty{
+		Properties: map[string]types.Property{
+			MetaLaunchpadUserIsValid:    types.NewBooleanProperty(),
+			MetaLaunchpadUserIsTeam:     types.NewBooleanProperty(),
+			MetaLaunchpadUserStatus:     types.NewKeywordProperty(),
+			MetaLaunchpadUserVisibility: types.NewKeywordProperty(),
+			MetaLaunchpadUserCreatedAt:  types.NewDateProperty(),
+		},
+	}
 }
 
-type LaunchpadPublicKeyEntry struct {
-	ApiId     int       `json:"apiId"`
-	KeyType   string    `json:"keyType"`
-	Key       string    `json:"key"`
-	Comment   string    `json:"comment"`
-	VisitedAt time.Time `json:"visitedAt"`
-	Deleted   bool      `json:"deleted"`
+func (s *LaunchpadScraper) getPublicKeyMetadataMapping() *types.ObjectProperty {
+	return &types.ObjectProperty{
+		Properties: map[string]types.Property{
+			MetaLaunchpadPublicKeyRemoteId: types.NewIntegerNumberProperty(),
+			MetaLaunchpadPublicKeyKeyType:  types.NewKeywordProperty(),
+			MetaLaunchpadPublicKeyComment:  types.NewTextProperty(),
+		},
+	}
 }
 
 func (s *LaunchpadScraper) newHttpClient() *http.Client {
@@ -111,22 +122,24 @@ func (s *LaunchpadScraper) updateCursor(ctx context.Context) {
 	s.log("cursor updated, new cursor: %v", false, s.Cursor)
 }
 
-func (s *LaunchpadScraper) mapToUserEntry(apiUser *LaunchpadPeopleApiEntry, apiSshKeys *[]LaunchpadSshKeysApiEntry, existing *LaunchpadUserEntry) *LaunchpadUserEntry {
+func (s *LaunchpadScraper) mapToUserEntry(apiUser *LaunchpadPeopleApiEntry, apiSshKeys *[]LaunchpadSshKeysApiEntry, existing *UserEntry) *UserEntry {
 	now := time.Now()
-	entry := &LaunchpadUserEntry{
-		Username:   apiUser.Name,
-		IsValid:    apiUser.IsValid,
-		IsTeam:     apiUser.IsTeam,
-		Status:     apiUser.AccountStatus,
-		Visibility: apiUser.Visibility,
-		CreatedAt:  apiUser.DateCreated,
-		VisitedAt:  now,
-		Deleted:    false,
+	entry := &UserEntry{
+		Username: apiUser.Name,
+		Metadata: map[string]any{
+			MetaLaunchpadUserIsValid:    apiUser.IsValid,
+			MetaLaunchpadUserIsTeam:     apiUser.IsTeam,
+			MetaLaunchpadUserStatus:     apiUser.AccountStatus,
+			MetaLaunchpadUserVisibility: apiUser.Visibility,
+			MetaLaunchpadUserCreatedAt:  apiUser.DateCreated,
+		},
+		VisitedAt: now,
+		Deleted:   false,
 	}
 	if existing != nil {
 		entry.PublicKeys = existing.PublicKeys
 	} else {
-		entry.PublicKeys = []LaunchpadPublicKeyEntry{}
+		entry.PublicKeys = []PublicKeyEntry{}
 	}
 	for _, key := range *apiSshKeys {
 		apiId, err := s.selfLinkToApiId(key.SelfLink)
@@ -138,73 +151,27 @@ func (s *LaunchpadScraper) mapToUserEntry(apiUser *LaunchpadPeopleApiEntry, apiS
 			// We do not use the API ID for comparison here, as it is not documented whether it is unique
 			if existingKey.Key == key.KeyText {
 				exists = true
-				existingKey.ApiId = apiId
+				existingKey.Metadata[MetaLaunchpadPublicKeyRemoteId] = apiId
+				existingKey.Metadata[MetaLaunchpadPublicKeyKeyType] = key.KeyType
+				existingKey.Metadata[MetaLaunchpadPublicKeyComment] = key.Comment
 				existingKey.Deleted = false
 				existingKey.VisitedAt = now
 			}
 		}
 		if !exists {
-			entry.PublicKeys = append(entry.PublicKeys, LaunchpadPublicKeyEntry{
-				ApiId:     apiId,
-				KeyType:   key.KeyType,
-				Key:       key.KeyText,
-				Comment:   key.Comment,
+			entry.PublicKeys = append(entry.PublicKeys, PublicKeyEntry{
+				Key: key.KeyText,
+				Metadata: map[string]any{
+					MetaLaunchpadPublicKeyRemoteId: apiId,
+					MetaLaunchpadPublicKeyKeyType:  key.KeyType,
+					MetaLaunchpadPublicKeyComment:  key.Comment,
+				},
 				VisitedAt: now,
 				Deleted:   false,
 			})
 		}
 	}
 	return entry
-}
-
-func (s *LaunchpadScraper) createUserIndex(ctx context.Context) error {
-	// Check if user index exists, create it if it doesn't
-	exists, err := s.Elasticsearch.Indices.Exists(s.UserIndex).Do(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to check if user index exists: %w", err)
-	}
-	if exists {
-		return nil
-	}
-	_, err = s.Elasticsearch.Indices.
-		Create(s.UserIndex).
-		Request(&create.Request{
-			Mappings: &types.TypeMapping{
-				Properties: map[string]types.Property{
-					"username":   types.NewKeywordProperty(),
-					"status":     types.NewKeywordProperty(),
-					"visibility": types.NewKeywordProperty(),
-					"isValid":    types.NewBooleanProperty(),
-					"isTeam":     types.NewBooleanProperty(),
-					"createdAt":  types.NewDateProperty(),
-					"publicKeys": &types.NestedProperty{
-						Properties: map[string]types.Property{
-							"apiId":   types.NewIntegerNumberProperty(),
-							"keyType": types.NewKeywordProperty(),
-							"key":     types.NewTextProperty(),
-							"comment": types.NewTextProperty(),
-
-							// Fields added by the scraper
-							"visitedAt": types.NewDateProperty(),
-							"deleted":   types.NewBooleanProperty(),
-						},
-					},
-
-					// Fields added by the scraper
-					"visitedAt": types.NewDateProperty(),
-					"deleted":   types.NewBooleanProperty(),
-				},
-			},
-			Settings: &types.IndexSettings{
-				NumberOfShards:   "1",
-				NumberOfReplicas: "2",
-			},
-		}).
-		Do(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create user index: %w", err)
-	}
-	return nil
 }
 
 func (s *LaunchpadScraper) processResponse(ctx context.Context, user *LaunchpadPeopleApiEntry, publicKeys *[]LaunchpadSshKeysApiEntry) {
@@ -226,7 +193,7 @@ func (s *LaunchpadScraper) processResponse(ctx context.Context, user *LaunchpadP
 		}
 		return
 	}
-	var entry *LaunchpadUserEntry
+	var entry *UserEntry
 	if searchResult.Hits.Total.Value == 0 {
 		entry = s.mapToUserEntry(user, publicKeys, nil)
 		_, err = s.Elasticsearch.Index(s.UserIndex).
@@ -241,7 +208,7 @@ func (s *LaunchpadScraper) processResponse(ctx context.Context, user *LaunchpadP
 			return
 		}
 	} else {
-		var existing LaunchpadUserEntry
+		var existing UserEntry
 		if err = json.Unmarshal(searchResult.Hits.Hits[0].Source_, &existing); err != nil {
 			s.log("failed to unmarshal user %v from elasticsearch: %v", true, user.Name, err)
 			err := s.saveUnprocessedUser(user.Name, user)
@@ -320,9 +287,6 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 }
 
 func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
-	if err := s.createUserIndex(ctx); err != nil {
-		panic(err)
-	}
 	httpClient := s.newHttpClient()
 	if s.Cursor == "" {
 		s.Cursor = s.getPlatformConfigString("initialCursor")

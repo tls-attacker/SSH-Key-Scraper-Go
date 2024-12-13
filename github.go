@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/Khan/genqlient/graphql"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/indices/create"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"net/http"
 	"strconv"
@@ -25,25 +24,15 @@ const searchLimit = 1000
 // The maximum number of requests we can make to the GitHub API per hour
 const maxPrimaryRateLimit = 5000
 
-type GitHubScraper struct {
+const (
+	MetaGithubUserRemoteId         = "remoteId"
+	MetaGithubUserCreatedAt        = "createdAt"
+	MetaGithubUserUpdatedAt        = "updatedAt"
+	MetaGithubPublicKeyFingerprint = "fingerprint"
+)
+
+type GithubScraper struct {
 	*Scraper
-}
-
-type GitHubPublicKeyEntry struct {
-	Key         string    `json:"key"`
-	Fingerprint string    `json:"fingerprint"`
-	VisitedAt   time.Time `json:"visitedAt"`
-	Deleted     bool      `json:"deleted"`
-}
-
-type GitHubUserEntry struct {
-	DatabaseId string                 `json:"databaseId"`
-	Login      string                 `json:"login"`
-	CreatedAt  time.Time              `json:"createdAt"`
-	UpdatedAt  time.Time              `json:"updatedAt"`
-	VisitedAt  time.Time              `json:"visitedAt"`
-	Deleted    bool                   `json:"deleted"`
-	PublicKeys []GitHubPublicKeyEntry `json:"publicKeys"`
 }
 
 type githubTransport struct {
@@ -56,7 +45,25 @@ func (t *githubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.wrapped.RoundTrip(req)
 }
 
-func (s *GitHubScraper) newGraphQLClient() graphql.Client {
+func (s *GithubScraper) getUserMetadataMapping() *types.ObjectProperty {
+	return &types.ObjectProperty{
+		Properties: map[string]types.Property{
+			MetaGithubUserRemoteId:  types.NewKeywordProperty(),
+			MetaGithubUserCreatedAt: types.NewDateProperty(),
+			MetaGithubUserUpdatedAt: types.NewDateProperty(),
+		},
+	}
+}
+
+func (s *GithubScraper) getPublicKeyMetadataMapping() *types.ObjectProperty {
+	return &types.ObjectProperty{
+		Properties: map[string]types.Property{
+			MetaGithubPublicKeyFingerprint: types.NewTextProperty(),
+		},
+	}
+}
+
+func (s *GithubScraper) newGraphQLClient() graphql.Client {
 	httpClient := http.Client{
 		Timeout: s.getPlatformConfigDuration("timeout"),
 		Transport: &githubTransport{
@@ -67,7 +74,7 @@ func (s *GitHubScraper) newGraphQLClient() graphql.Client {
 	return graphql.NewClient("https://api.github.com/graphql", &httpClient)
 }
 
-func (s *GitHubScraper) compileQueryString(cursor string) string {
+func (s *GithubScraper) compileQueryString(cursor string) string {
 	startDate, _ := time.Parse(time.RFC3339, cursor)
 	endDate := startDate.Add(requestedTimespanGithub)
 	return fmt.Sprintf("created:%s..%s type:user sort:joined-asc",
@@ -75,7 +82,7 @@ func (s *GitHubScraper) compileQueryString(cursor string) string {
 		endDate.UTC().Format("2006-01-02T15:04:05Z"))
 }
 
-func (s *GitHubScraper) updateCursor(ctx context.Context, res *github.GetSshPublicKeysResponse) {
+func (s *GithubScraper) updateCursor(ctx context.Context, res *github.GetSshPublicKeysResponse) {
 	if res.Search.UserCount < searchLimit && !res.Search.PageInfo.HasNextPage {
 		current, _ := time.Parse(time.RFC3339, s.Cursor)
 		current = current.Add(requestedTimespanGithub)
@@ -93,89 +100,49 @@ func (s *GitHubScraper) updateCursor(ctx context.Context, res *github.GetSshPubl
 	s.log("cursor updated, new cursor: %v", false, s.Cursor)
 }
 
-func (s *GitHubScraper) mapToUserEntry(user *github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser, existing *GitHubUserEntry) *GitHubUserEntry {
+func (s *GithubScraper) mapToUserEntry(user *github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser, existing *UserEntry) *UserEntry {
 	now := time.Now()
-	entry := &GitHubUserEntry{
-		DatabaseId: strconv.Itoa(user.DatabaseId),
-		Login:      user.Login,
-		CreatedAt:  user.CreatedAt,
-		UpdatedAt:  user.UpdatedAt,
-		VisitedAt:  now,
-		Deleted:    false,
+	entry := &UserEntry{
+		Username: user.Login,
+		Metadata: map[string]any{
+			MetaGithubUserRemoteId:  user.DatabaseId,
+			MetaGithubUserCreatedAt: user.CreatedAt,
+			MetaGithubUserUpdatedAt: user.UpdatedAt,
+		},
+		VisitedAt: now,
+		Deleted:   false,
 	}
 	if existing != nil {
 		entry.PublicKeys = existing.PublicKeys
 	} else {
-		entry.PublicKeys = []GitHubPublicKeyEntry{}
+		entry.PublicKeys = []PublicKeyEntry{}
 	}
 	for _, key := range user.PublicKeys.Nodes {
 		exists := false
 		for _, existingKey := range entry.PublicKeys {
-			if existingKey.Fingerprint == key.Fingerprint {
+			if existingKey.Key == key.Key {
 				exists = true
+				// Update metadata
+				existingKey.Metadata[MetaGithubPublicKeyFingerprint] = key.Fingerprint
 				existingKey.Deleted = false
 				existingKey.VisitedAt = now
 			}
 		}
 		if !exists {
-			entry.PublicKeys = append(entry.PublicKeys, GitHubPublicKeyEntry{
-				Key:         key.Key,
-				Fingerprint: key.Fingerprint,
-				VisitedAt:   time.Now(),
-				Deleted:     false,
+			entry.PublicKeys = append(entry.PublicKeys, PublicKeyEntry{
+				Key: key.Key,
+				Metadata: map[string]any{
+					MetaGithubPublicKeyFingerprint: key.Fingerprint,
+				},
+				VisitedAt: time.Now(),
+				Deleted:   false,
 			})
 		}
 	}
 	return entry
 }
 
-func (s *GitHubScraper) createUserIndex(ctx context.Context) error {
-	// Check if user index exists, create it if it doesn't
-	exists, err := s.Elasticsearch.Indices.Exists(s.UserIndex).Do(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to check if user index exists: %w", err)
-	}
-	if exists {
-		return nil
-	}
-	_, err = s.Elasticsearch.Indices.
-		Create(s.UserIndex).
-		Request(&create.Request{
-			Mappings: &types.TypeMapping{
-				Properties: map[string]types.Property{
-					"databaseId": types.NewKeywordProperty(),
-					"login":      types.NewKeywordProperty(),
-					"createdAt":  types.NewDateProperty(),
-					"updatedAt":  types.NewDateProperty(),
-					"publicKeys": &types.NestedProperty{
-						Properties: map[string]types.Property{
-							"key":         types.NewTextProperty(),
-							"fingerprint": types.NewTextProperty(),
-
-							// Fields added by the scraper
-							"visitedAt": types.NewDateProperty(),
-							"deleted":   types.NewBooleanProperty(),
-						},
-					},
-
-					// Fields added by the scraper
-					"visitedAt": types.NewDateProperty(),
-					"deleted":   types.NewBooleanProperty(),
-				},
-			},
-			Settings: &types.IndexSettings{
-				NumberOfShards:   "1",
-				NumberOfReplicas: "2",
-			},
-		}).
-		Do(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create user index: %w", err)
-	}
-	return nil
-}
-
-func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPublicKeysResponse, wg *sync.WaitGroup) {
+func (s *GithubScraper) processResponse(ctx context.Context, res github.GetSshPublicKeysResponse, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for _, user := range res.Search.Nodes {
 		if user, ok := user.(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser); ok {
@@ -197,7 +164,7 @@ func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPu
 				}
 				continue
 			}
-			var entry *GitHubUserEntry
+			var entry *UserEntry
 			if searchResult.Hits.Total.Value == 0 {
 				entry = s.mapToUserEntry(user, nil)
 				_, err = s.Elasticsearch.Index(s.UserIndex).
@@ -212,7 +179,7 @@ func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPu
 					continue
 				}
 			} else {
-				var existing GitHubUserEntry
+				var existing UserEntry
 				if err = json.Unmarshal(searchResult.Hits.Hits[0].Source_, &existing); err != nil {
 					s.log("failed to unmarshal user %v from elasticsearch: %v", true, user.Login, err)
 					err := s.saveUnprocessedUser(user.Login, user)
@@ -239,7 +206,7 @@ func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPu
 	}
 }
 
-func (s *GitHubScraper) handleApiError(err error) {
+func (s *GithubScraper) handleApiError(err error) {
 	if strings.Contains(err.Error(), "You have exceeded a secondary rate limit") {
 		// If we hit the secondary rate limit, we wait for a minute before continuing
 		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("secondaryRateLimitCooldown"))
@@ -250,10 +217,7 @@ func (s *GitHubScraper) handleApiError(err error) {
 	}
 }
 
-func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
-	if err := s.createUserIndex(ctx); err != nil {
-		panic(err)
-	}
+func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 	client := s.newGraphQLClient()
 	if s.Cursor == "" {
 		s.Cursor = s.getPlatformConfigString("initialCursor")
