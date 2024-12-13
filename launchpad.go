@@ -142,6 +142,9 @@ func (s *LaunchpadScraper) mapToUserEntry(apiUser *LaunchpadPeopleApiEntry, apiS
 		entry.PublicKeys = []PublicKeyEntry{}
 	}
 	for _, key := range *apiSshKeys {
+		keyText := strings.TrimSpace(key.KeyText)
+		keyText = strings.ReplaceAll(keyText, "\r", "")
+		keyText = strings.ReplaceAll(keyText, "\n", "")
 		apiId, err := s.selfLinkToApiId(key.SelfLink)
 		if err != nil {
 			apiId = 0
@@ -149,7 +152,7 @@ func (s *LaunchpadScraper) mapToUserEntry(apiUser *LaunchpadPeopleApiEntry, apiS
 		exists := false
 		for _, existingKey := range entry.PublicKeys {
 			// We do not use the API ID for comparison here, as it is not documented whether it is unique
-			if existingKey.Key == key.KeyText {
+			if existingKey.Key == keyText {
 				exists = true
 				existingKey.Metadata[MetaLaunchpadPublicKeyRemoteId] = apiId
 				existingKey.Metadata[MetaLaunchpadPublicKeyKeyType] = key.KeyType
@@ -160,7 +163,7 @@ func (s *LaunchpadScraper) mapToUserEntry(apiUser *LaunchpadPeopleApiEntry, apiS
 		}
 		if !exists {
 			entry.PublicKeys = append(entry.PublicKeys, PublicKeyEntry{
-				Key: key.KeyText,
+				Key: keyText,
 				Metadata: map[string]any{
 					MetaLaunchpadPublicKeyRemoteId: apiId,
 					MetaLaunchpadPublicKeyKeyType:  key.KeyType,
