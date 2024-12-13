@@ -268,18 +268,28 @@ func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, failures chan<- error, wg *sync.WaitGroup) {
 	defer wg.Done()
 	restClient := s.newRestClient()
+	maxRetries := s.getPlatformConfigInt("maxRetries")
 	for user := range users {
 		userId, err := s.gidToUserId(user.Id)
 		if err != nil {
 			s.log("failed to parse user id from gid: %v", true, err)
 			continue
 		}
-		res, err := restClient.Get(fmt.Sprintf("https://gitlab.com/api/v4/users/%v/keys", strconv.Itoa(userId)))
-		if err != nil {
-			// If we encounter any error, we wait for the configured duration before continuing
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
-			failures <- err
-			return
+		retry := 0
+		var res *http.Response
+		for res == nil || err != nil {
+			res, err = restClient.Get(fmt.Sprintf("https://gitlab.com/api/v4/users/%v/keys", strconv.Itoa(userId)))
+			if err != nil {
+				retry++
+				if retry <= maxRetries {
+					s.log("failed to retrieve user's public keys from gitlab, retrying %v/%v", true, retry, maxRetries)
+					continue
+				}
+				// If we encounter any error after exceeding maxRetries, we wait for the configured duration before continuing
+				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+				failures <- err
+				return
+			}
 		}
 		if res.StatusCode != 200 {
 			if res.StatusCode == 429 {
@@ -295,7 +305,7 @@ func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 				return
 			} else if res.StatusCode == 404 {
 				// If the API cannot find a user by the given username, we skip the user
-				s.log("user %v not found, continuing", false, user.Username)
+				s.log("user %v not found in REST API, continuing", true, user.Username)
 				continue
 			}
 			// If we encounter any unknown error, we wait for the configured duration before continuing
@@ -333,6 +343,8 @@ func (s *GitLabScraper) Scrape(ctx context.Context) (bool, error) {
 
 	wg := sync.WaitGroup{}
 	concurrentRequests := s.getPlatformConfigInt("concurrentRequests")
+	retry := 0
+	maxRetries := s.getPlatformConfigInt("maxRetries")
 	var res *gitlab.GetUsersResponse
 	var err error
 	for {
@@ -340,10 +352,16 @@ func (s *GitLabScraper) Scrape(ctx context.Context) (bool, error) {
 		// Start by fetching the next page of users
 		res, err = gitlab.GetUsers(ctx, gqlClient, s.Cursor)
 		if err != nil {
+			retry++
+			if retry <= maxRetries {
+				s.log("failed to retrieve user's public keys from gitlab, retrying %v/%v", true, retry, maxRetries)
+				continue
+			}
 			// If we encounter any error, we wait for the configured duration before continuing
 			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
 			return false, err
 		}
+		retry = 0
 
 		users := make(chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, len(res.Users.Nodes))
 		failures := make(chan error, concurrentRequests)

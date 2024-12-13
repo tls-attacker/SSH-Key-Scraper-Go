@@ -31,7 +31,8 @@
       "incrementalInterval": "24h",
       "fullInterval": "720h",
       "concurrentRequests": 10,
-      "apiErrorCooldown": "5m"
+      "apiErrorCooldown": "5m",
+      "maxRetries": 5
     }
   }
 }
