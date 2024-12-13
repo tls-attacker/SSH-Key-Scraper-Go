@@ -212,7 +212,7 @@ func (s *GitLabScraper) createUserIndex(ctx context.Context) error {
 	return nil
 }
 
-func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys []GitLabPublicKey) {
+func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, publicKeys *[]GitLabPublicKey) {
 	searchResult, err := s.Elasticsearch.Search().
 		Index(s.UserIndex).
 		Request(&search.Request{
@@ -224,6 +224,7 @@ func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 		}).Do(ctx)
 	if err != nil {
 		// If anything goes wrong, we save the unprocessed user to a file
+		s.log("failed to search for user %v in elasticsearch: %v", true, user.Username, err)
 		err := s.saveUnprocessedUser(user.Username, user)
 		if err != nil {
 			panic(err)
@@ -232,11 +233,12 @@ func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 	}
 	var entry *GitLabUserEntry
 	if searchResult.Hits.Total.Value == 0 {
-		entry = s.mapToUserEntry(user, &publicKeys, nil)
+		entry = s.mapToUserEntry(user, publicKeys, nil)
 		_, err = s.Elasticsearch.Index(s.UserIndex).
 			Request(entry).
 			Do(ctx)
 		if err != nil {
+			s.log("failed to index user %v in elasticsearch: %v", true, user.Username, err)
 			err := s.saveUnprocessedUser(user.Username, user)
 			if err != nil {
 				panic(err)
@@ -244,20 +246,22 @@ func (s *GitLabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 			return
 		}
 	} else {
-		var existing *GitLabUserEntry
+		var existing GitLabUserEntry
 		if err = json.Unmarshal(searchResult.Hits.Hits[0].Source_, &existing); err != nil {
+			s.log("failed to unmarshal user %v from elasticsearch: %v", true, user.Username, err)
 			err := s.saveUnprocessedUser(user.Username, user)
 			if err != nil {
 				panic(err)
 			}
 			return
 		}
-		entry = s.mapToUserEntry(user, &publicKeys, entry)
+		entry = s.mapToUserEntry(user, publicKeys, &existing)
 		_, err = s.Elasticsearch.Index(s.UserIndex).
 			Id(*searchResult.Hits.Hits[0].Id_).
 			Request(entry).
 			Do(ctx)
 		if err != nil {
+			s.log("failed to update user %v in elasticsearch: %v", true, user.Username, err)
 			err := s.saveUnprocessedUser(user.Username, user)
 			if err != nil {
 				panic(err)
@@ -322,10 +326,10 @@ func (s *GitLabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 		var publicKeys []GitLabPublicKey
 		if err := json.NewDecoder(res.Body).Decode(&publicKeys); err != nil {
 			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
-			s.log("failed to decode public keys from json for user %v: %w", true, user.Username, err)
+			s.log("failed to decode public keys from json for user %v: %v", true, user.Username, err)
 			continue
 		}
-		s.processResponse(ctx, &user, publicKeys)
+		s.processResponse(ctx, &user, &publicKeys)
 	}
 }
 
@@ -368,12 +372,10 @@ func (s *GitLabScraper) Scrape(ctx context.Context) (bool, error) {
 
 		users := make(chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, len(res.Users.Nodes))
 		failures := make(chan error, concurrentRequests)
-
 		wg.Add(concurrentRequests)
 		for i := 0; i < concurrentRequests; i++ {
 			go s.publicKeyWorker(ctx, users, failures, &wg)
 		}
-
 		for _, user := range res.Users.Nodes {
 			users <- user
 		}

@@ -59,6 +59,11 @@ func (s *Scraper) scrape(ctx context.Context) (bool, error) {
 			s,
 		}
 		return scraper.Scrape(ctx)
+	case Launchpad:
+		scraper := &LaunchpadScraper{
+			s,
+		}
+		return scraper.Scrape(ctx)
 	default:
 		return false, fmt.Errorf("scraper for platform not yet implemented")
 	}

@@ -30,11 +30,24 @@
       "timeout": "30s",
       "minimumIterationDuration": "0s",
       "userIndex": "sshks_gitlab_users",
+      "initialCursor": "",
       "incrementalInterval": "24h",
       "fullInterval": "720h",
       "concurrentRequests": 10,
       "apiErrorCooldown": "5m",
       "maxRetries": 5
+    },
+    "launchpad": {
+      "enabled": true,
+      "timeout": "30s",
+      "minimumIterationDuration": "0s",
+      "userIndex": "sshks_launchpad_users",
+      "initialCursor": "2005-06-15T00:00:00Z",
+      "incrementalInterval": "24h",
+      "fullInterval": "720h",
+      "concurrentRequests": 10,
+      "apiErrorCooldown": "5m",
+      "maxRetries": 10
     }
   }
 }

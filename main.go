@@ -80,5 +80,14 @@ func main() {
 		scraper.Register(sched)
 	}
 
+	// Launchpad
+	if viper.GetBool("scrapers.launchpad.enabled") {
+		scraper, err := LoadScraper(ctx, es, Launchpad)
+		if err != nil {
+			log.Fatalf("[!] failed to load launchpad scraper from database: %s", err.Error())
+		}
+		scraper.Register(sched)
+	}
+
 	<-ctx.Done()
 }

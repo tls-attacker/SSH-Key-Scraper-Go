@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// The timespan which we request in a single request from the search API (30 days)
-const timespan = 30 * 24 * time.Hour
+// requestedTimespanGithub specifies the timespan which we request in a single request from the search API (30 days)
+const requestedTimespanGithub = 30 * 24 * time.Hour
 
 // The maximum number of users GitHub returns to a single search request (even with pagination)
 const searchLimit = 1000
@@ -69,7 +69,7 @@ func (s *GitHubScraper) newGraphQLClient() graphql.Client {
 
 func (s *GitHubScraper) compileQueryString(cursor string) string {
 	startDate, _ := time.Parse(time.RFC3339, cursor)
-	endDate := startDate.Add(timespan)
+	endDate := startDate.Add(requestedTimespanGithub)
 	return fmt.Sprintf("created:%s..%s type:user sort:joined-asc",
 		startDate.UTC().Format("2006-01-02T15:04:05Z"),
 		endDate.UTC().Format("2006-01-02T15:04:05Z"))
@@ -78,9 +78,10 @@ func (s *GitHubScraper) compileQueryString(cursor string) string {
 func (s *GitHubScraper) updateCursor(ctx context.Context, res *github.GetSshPublicKeysResponse) {
 	if res.Search.UserCount < searchLimit && !res.Search.PageInfo.HasNextPage {
 		current, _ := time.Parse(time.RFC3339, s.Cursor)
-		current = current.Add(timespan)
-		if current.After(time.Now()) {
-			current = time.Now()
+		current = current.Add(requestedTimespanGithub)
+		now := time.Now()
+		if current.After(now) {
+			current = now
 		}
 		s.Cursor = current.Format(time.RFC3339)
 	} else if user, ok := res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser); ok {
@@ -189,6 +190,7 @@ func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPu
 				}).Do(ctx)
 			if err != nil {
 				// If anything goes wrong, we save the unprocessed user to a file
+				s.log("failed to search for user %v in elasticsearch: %v", true, user.Login, err)
 				err := s.saveUnprocessedUser(user.Login, user)
 				if err != nil {
 					panic(err)
@@ -202,6 +204,7 @@ func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPu
 					Request(entry).
 					Do(ctx)
 				if err != nil {
+					s.log("failed to index user %v in elasticsearch: %v", true, user.Login, err)
 					err := s.saveUnprocessedUser(user.Login, user)
 					if err != nil {
 						panic(err)
@@ -209,20 +212,22 @@ func (s *GitHubScraper) processResponse(ctx context.Context, res github.GetSshPu
 					continue
 				}
 			} else {
-				var existing *GitHubUserEntry
+				var existing GitHubUserEntry
 				if err = json.Unmarshal(searchResult.Hits.Hits[0].Source_, &existing); err != nil {
+					s.log("failed to unmarshal user %v from elasticsearch: %v", true, user.Login, err)
 					err := s.saveUnprocessedUser(user.Login, user)
 					if err != nil {
 						panic(err)
 					}
 					continue
 				}
-				entry = s.mapToUserEntry(user, entry)
+				entry = s.mapToUserEntry(user, &existing)
 				_, err = s.Elasticsearch.Index(s.UserIndex).
 					Id(*searchResult.Hits.Hits[0].Id_).
 					Request(entry).
 					Do(ctx)
 				if err != nil {
+					s.log("failed to update user %v in elasticsearch: %v", true, user.Login, err)
 					err := s.saveUnprocessedUser(user.Login, user)
 					if err != nil {
 						panic(err)
@@ -282,7 +287,7 @@ func (s *GitHubScraper) Scrape(ctx context.Context) (bool, error) {
 
 		// Check if this iteration is the last one for now
 		cursor, _ := time.Parse(time.RFC3339, s.Cursor)
-		lastIteration := cursor.Add(timespan).After(time.Now()) && res.Search.UserCount < searchLimit
+		lastIteration := cursor.Add(requestedTimespanGithub).After(time.Now()) && res.Search.UserCount < searchLimit
 
 		wg.Add(1)
 		go s.processResponse(ctx, *res, &wg)
