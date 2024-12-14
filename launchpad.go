@@ -360,6 +360,7 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 		if err := json.NewDecoder(res.Body).Decode(&usersResponse); err != nil {
 			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
 			s.log("failed to decode people api response from json at cursor %v (url: %v): %v", true, s.Cursor, requestUrl, err)
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
 			return false, err
 		}
 
@@ -378,6 +379,7 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 
 		if len(failures) > 0 {
 			// If we encountered any errors while processing users, we return the first error
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
 			return false, <-failures
 		}
 
