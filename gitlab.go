@@ -81,9 +81,9 @@ func (t *gitlabTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (s *GitlabScraper) newGraphQLClient() graphql.Client {
 	httpClient := http.Client{
-		Timeout: s.getPlatformConfigDuration("timeout"),
+		Timeout: s.getPlatformConfigDuration(ConfigTimeout),
 		Transport: &gitlabTransport{
-			token:   s.getPlatformConfigString("token"),
+			token:   s.getPlatformConfigString(ConfigToken),
 			graphql: true,
 			wrapped: http.DefaultTransport,
 		},
@@ -93,9 +93,9 @@ func (s *GitlabScraper) newGraphQLClient() graphql.Client {
 
 func (s *GitlabScraper) newRestClient() *http.Client {
 	return &http.Client{
-		Timeout: s.getPlatformConfigDuration("timeout"),
+		Timeout: s.getPlatformConfigDuration(ConfigTimeout),
 		Transport: &gitlabTransport{
-			token:   s.getPlatformConfigString("token"),
+			token:   s.getPlatformConfigString(ConfigToken),
 			graphql: false,
 			wrapped: http.DefaultTransport,
 		},
@@ -245,7 +245,7 @@ func (s *GitlabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, failures chan<- error, wg *sync.WaitGroup) {
 	defer wg.Done()
 	restClient := s.newRestClient()
-	maxRetries := s.getPlatformConfigInt("maxRetries")
+	maxRetries := s.getPlatformConfigInt(ConfigMaxRetries)
 	for user := range users {
 		userId, err := s.gidToUserId(user.Id)
 		if err != nil {
@@ -263,7 +263,7 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 					continue
 				}
 				// If we encounter any error after exceeding maxRetries, we wait for the configured duration before continuing
-				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 				failures <- err
 				return
 			}
@@ -275,7 +275,7 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 					s.ContinueAt = resetTime.Add(1 * time.Minute)
 					s.log("hit rate limit, continuing at %v", false, s.ContinueAt)
 				} else {
-					s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+					s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 					s.log("hit rate limit but failed to parse rate limit reset time, continuing at %v", true, s.ContinueAt)
 				}
 				failures <- fmt.Errorf("rate limit hit")
@@ -286,7 +286,7 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 				continue
 			}
 			// If we encounter any unknown error, we wait for the configured duration before continuing
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 			failures <- fmt.Errorf("unexpected status code while retrieving public keys for user %v: %v", user.Username, res.StatusCode)
 			return
 		}
@@ -307,7 +307,7 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 	gqlClient := s.newGraphQLClient()
 	if s.Cursor == "" {
-		s.Cursor = s.getPlatformConfigString("initialCursor")
+		s.Cursor = s.getPlatformConfigString(ConfigInitialCursor)
 		if err := s.Save(ctx); err != nil {
 			panic(err)
 		}
@@ -316,10 +316,10 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 	s.log("starting scraping from %v", false, s.Cursor)
 
 	wg := sync.WaitGroup{}
-	concurrentRequests := s.getPlatformConfigInt("concurrentRequests")
+	concurrentRequests := s.getPlatformConfigInt(ConfigConcurrentRequests)
 	retry := 0
-	maxRetries := s.getPlatformConfigInt("maxRetries")
-	minimumIterationDuration := s.getPlatformConfigDuration("minimumIterationDuration")
+	maxRetries := s.getPlatformConfigInt(ConfigMaxRetries)
+	minimumIterationDuration := s.getPlatformConfigDuration(ConfigMinimumIterationDuration)
 	var res *gitlab.GetUsersResponse
 	var err error
 	for {
@@ -333,7 +333,7 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 				continue
 			}
 			// If we encounter any error, we wait for the configured duration before continuing
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 			return false, err
 		}
 		retry = 0

@@ -94,7 +94,7 @@ func (s *LaunchpadScraper) getPublicKeyMetadataMapping() *types.ObjectProperty {
 
 func (s *LaunchpadScraper) newHttpClient() *http.Client {
 	return &http.Client{
-		Timeout: s.getPlatformConfigDuration("timeout"),
+		Timeout: s.getPlatformConfigDuration(ConfigTimeout),
 	}
 }
 
@@ -239,7 +239,7 @@ func (s *LaunchpadScraper) processResponse(ctx context.Context, user *LaunchpadP
 func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan LaunchpadPeopleApiEntry, failures chan<- error, wg *sync.WaitGroup) {
 	defer wg.Done()
 	httpClient := s.newHttpClient()
-	maxRetries := s.getPlatformConfigInt("maxRetries")
+	maxRetries := s.getPlatformConfigInt(ConfigMaxRetries)
 	for user := range users {
 		retry := 0
 		var res *http.Response
@@ -256,7 +256,7 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 				}
 				// If we encounter any error after exceeding maxRetries, we wait for the configured duration before continuing
 				s.log("exceeded max retries while retrieving public keys for user %v, giving up for now", true, s.Cursor)
-				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 				failures <- err
 				return
 			}
@@ -265,7 +265,7 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 			if res.StatusCode == 429 {
 				// Launchpad does not have a publicly documented rate limit, but we pay respect to the status code anyway
 				// If we hit the rate limit, we wait for the rate limit reset time before continuing
-				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 				s.log("hit rate limit, continuing at %v", true, s.ContinueAt)
 				failures <- fmt.Errorf("rate limit hit")
 				return
@@ -275,7 +275,7 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 				continue
 			}
 			// If we encounter any unknown error, we wait for the configured duration before continuing
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 			failures <- fmt.Errorf("unexpected status code while retrieving public keys for user %v: %v", user.Name, res.StatusCode)
 			return
 		}
@@ -292,7 +292,7 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 	httpClient := s.newHttpClient()
 	if s.Cursor == "" {
-		s.Cursor = s.getPlatformConfigString("initialCursor")
+		s.Cursor = s.getPlatformConfigString(ConfigInitialCursor)
 		if err := s.Save(ctx); err != nil {
 			panic(err)
 		}
@@ -301,10 +301,10 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 	s.log("starting scraping from %v", false, s.Cursor)
 
 	wg := sync.WaitGroup{}
-	concurrentRequests := s.getPlatformConfigInt("concurrentRequests")
+	concurrentRequests := s.getPlatformConfigInt(ConfigConcurrentRequests)
 	retry := 0
-	maxRetries := s.getPlatformConfigInt("maxRetries")
-	minimumIterationDuration := s.getPlatformConfigDuration("minimumIterationDuration")
+	maxRetries := s.getPlatformConfigInt(ConfigMaxRetries)
+	minimumIterationDuration := s.getPlatformConfigDuration(ConfigMinimumIterationDuration)
 	var requestUrl string
 	page := 0
 	lastTimespan := false
@@ -335,7 +335,7 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 				}
 				// If we encounter any error after exceeding maxRetries, we wait for the configured duration before continuing
 				s.log("exceeded max retries while retrieving users at cursor %v (page %v), giving up for now", true, s.Cursor, page)
-				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 				return false, err
 			}
 		}
@@ -348,19 +348,19 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 			if res.StatusCode == 429 {
 				// Launchpad does not have a publicly documented rate limit, but we pay respect to the status code anyway
 				// If we hit the rate limit, we wait for the rate limit reset time before continuing
-				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 				s.log("hit rate limit, continuing at %v", true, s.ContinueAt)
 				return false, fmt.Errorf("rate limit hit")
 			}
 			// If we encounter any unknown error, we wait for the configured duration before continuing
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 			return false, fmt.Errorf("unexpected status code while retrieving users at cursor %v (url: %v): %v", s.Cursor, requestUrl, res.StatusCode)
 		}
 		var usersResponse LaunchpadPeopleApiResponse
 		if err := json.NewDecoder(res.Body).Decode(&usersResponse); err != nil {
 			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
 			s.log("failed to decode people api response from json at cursor %v (url: %v): %v", true, s.Cursor, requestUrl, err)
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 			return false, err
 		}
 
@@ -379,7 +379,7 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 
 		if len(failures) > 0 {
 			// If we encountered any errors while processing users, we return the first error
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 			return false, <-failures
 		}
 

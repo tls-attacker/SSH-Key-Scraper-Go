@@ -65,9 +65,9 @@ func (s *GithubScraper) getPublicKeyMetadataMapping() *types.ObjectProperty {
 
 func (s *GithubScraper) newGraphQLClient() graphql.Client {
 	httpClient := http.Client{
-		Timeout: s.getPlatformConfigDuration("timeout"),
+		Timeout: s.getPlatformConfigDuration(ConfigTimeout),
 		Transport: &githubTransport{
-			token:   s.getPlatformConfigString("token"),
+			token:   s.getPlatformConfigString(ConfigToken),
 			wrapped: http.DefaultTransport,
 		},
 	}
@@ -209,18 +209,18 @@ func (s *GithubScraper) processResponse(ctx context.Context, res github.GetSshPu
 func (s *GithubScraper) handleApiError(err error) {
 	if strings.Contains(err.Error(), "You have exceeded a secondary rate limit") {
 		// If we hit the secondary rate limit, we wait for a minute before continuing
-		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("secondaryRateLimitCooldown"))
+		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigSecondaryRateLimitCooldown))
 		s.log("secondary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 	} else {
 		// If we encounter any other error, we wait for an hour before continuing
-		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("apiErrorCooldown"))
+		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 	}
 }
 
 func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 	client := s.newGraphQLClient()
 	if s.Cursor == "" {
-		s.Cursor = s.getPlatformConfigString("initialCursor")
+		s.Cursor = s.getPlatformConfigString(ConfigInitialCursor)
 		if err := s.Save(ctx); err != nil {
 			panic(err)
 		}
@@ -232,7 +232,7 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 	var res *github.GetSshPublicKeysResponse
 	var err error
 	rateLimitRemaining := maxPrimaryRateLimit
-	minimumIterationDuration := s.getPlatformConfigDuration("minimumIterationDuration")
+	minimumIterationDuration := s.getPlatformConfigDuration(ConfigMinimumIterationDuration)
 	for {
 		iterationStart := time.Now()
 		// A single request usually costs between 1-2 rate limit points

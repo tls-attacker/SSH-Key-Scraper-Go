@@ -32,6 +32,19 @@ const (
 	ResetJob       JobType = "reset"
 )
 
+type PlatformConfigKey string
+
+const (
+	ConfigToken                      PlatformConfigKey = "token"
+	ConfigTimeout                    PlatformConfigKey = "timeout"
+	ConfigMaxRetries                 PlatformConfigKey = "maxRetries"
+	ConfigInitialCursor              PlatformConfigKey = "initialCursor"
+	ConfigConcurrentRequests         PlatformConfigKey = "concurrentRequests"
+	ConfigSecondaryRateLimitCooldown PlatformConfigKey = "secondaryRateLimitCooldown"
+	ConfigApiErrorCooldown           PlatformConfigKey = "apiErrorCooldown"
+	ConfigMinimumIterationDuration   PlatformConfigKey = "minimumIterationDuration"
+)
+
 type Scraper struct {
 	databaseID     string
 	Platform       Platform  `json:"platform"`
@@ -120,15 +133,15 @@ func (s *Scraper) saveUnprocessedUser(key string, user any) error {
 	return nil
 }
 
-func (s *Scraper) getPlatformConfigString(key string) string {
+func (s *Scraper) getPlatformConfigString(key PlatformConfigKey) string {
 	return viper.GetString(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
-func (s *Scraper) getPlatformConfigInt(key string) int {
+func (s *Scraper) getPlatformConfigInt(key PlatformConfigKey) int {
 	return viper.GetInt(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
-func (s *Scraper) getPlatformConfigDuration(key string) time.Duration {
+func (s *Scraper) getPlatformConfigDuration(key PlatformConfigKey) time.Duration {
 	return viper.GetDuration(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
