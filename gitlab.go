@@ -9,7 +9,6 @@ import (
 	"github.com/Khan/genqlient/graphql"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -33,7 +32,7 @@ type GitlabSshKeysApiEntry struct {
 	Id        int64     `json:"id"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ExpiresAt *string   `json:"expires_at"`
 	Key       string    `json:"key"`
 	UsageType string    `json:"usage_type"`
 }
@@ -60,13 +59,16 @@ func (s *GitlabScraper) getUserMetadataMapping() *types.ObjectProperty {
 }
 
 func (s *GitlabScraper) getPublicKeyMetadataMapping() *types.ObjectProperty {
+	format := "yyyyyy-MM-dd'T'HH:mm:ssXXX||yyyyy-MM-dd'T'HH:mm:ssXXX||strict_date_optional_time||epoch_millis"
+	expiresAtType := types.NewDateProperty()
+	expiresAtType.Format = &format
 	return &types.ObjectProperty{
 		Properties: map[string]types.Property{
 			MetaGitlabPublicKeyRemoteId:  types.NewLongNumberProperty(),
 			MetaGitlabPublicKeyTitle:     types.NewTextProperty(),
 			MetaGitlabPublicKeyUsageType: types.NewKeywordProperty(),
 			MetaGitlabPublicKeyCreatedAt: types.NewDateProperty(),
-			MetaGitlabPublicKeyExpiresAt: types.NewDateProperty(),
+			MetaGitlabPublicKeyExpiresAt: expiresAtType,
 		},
 	}
 }
@@ -251,6 +253,9 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 		userId, err := s.gidToUserId(user.Id)
 		if err != nil {
 			s.log("failed to parse user id from gid: %v", true, err)
+			if err := s.saveUnprocessedUser(user.Username, user); err != nil {
+				panic(err)
+			}
 			continue
 		}
 		retry := 0
@@ -284,6 +289,9 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 			} else if res.StatusCode == 404 {
 				// If the API cannot find a user by the given username, we skip the user
 				s.log("user %v not found in REST API, continuing", true, user.Username)
+				if err := s.saveUnprocessedUser(user.Username, user); err != nil {
+					panic(err)
+				}
 				continue
 			}
 			// If we encounter any unknown error, we wait for the configured duration before continuing
@@ -296,44 +304,14 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 			failures <- fmt.Errorf("unexpected content type: %v", res.Header.Get("Content-Type"))
 			return
 		}
-		responseBody, err := io.ReadAll(res.Body)
-		if err != nil {
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
-			failures <- fmt.Errorf("failed to read response body: %v", err)
-			return
-		}
 		var publicKeys []GitlabSshKeysApiEntry
-		if err := json.Unmarshal(responseBody, &publicKeys); err != nil {
-			if strings.Contains(err.Error(), "parsing time") {
-				// GitLab allows the year in expires_at to be more than four digits which is not supported by golang
-				// Retry parsing without unmarshalling the expires_at response field
-				var reducedPublicKeys []struct {
-					Id        int64     `json:"id"`
-					Title     string    `json:"title"`
-					CreatedAt time.Time `json:"created_at"`
-					Key       string    `json:"key"`
-					UsageType string    `json:"usage_type"`
-				}
-				if err := json.Unmarshal(responseBody, &reducedPublicKeys); err != nil {
-					// If parsing still fails we cannot parse the user's public keys at all (should not happen)
-					failures <- fmt.Errorf("failed to decode public keys from json for user %v: %v", user.Username, err)
-					continue
-				}
-				// Parsing without expires_at field successful, map each reduced public key to an instance of the entry struct
-				for _, reducedPublicKey := range reducedPublicKeys {
-					publicKeys = append(publicKeys, GitlabSshKeysApiEntry{
-						Id:        reducedPublicKey.Id,
-						Title:     reducedPublicKey.Title,
-						CreatedAt: reducedPublicKey.CreatedAt,
-						Key:       reducedPublicKey.Key,
-						UsageType: reducedPublicKey.UsageType,
-					})
-				}
-			} else {
-				s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
-				failures <- fmt.Errorf("failed to unmarshal response body: %v", err)
-				return
+		if err := json.NewDecoder(res.Body).Decode(&publicKeys); err != nil {
+			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
+			s.log("failed to decode public keys from json for user %v: %v", true, user.Username, err)
+			if err := s.saveUnprocessedUser(user.Username, user); err != nil {
+				panic(err)
 			}
+			continue
 		}
 		s.processResponse(ctx, &user, &publicKeys)
 	}
