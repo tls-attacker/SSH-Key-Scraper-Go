@@ -272,6 +272,9 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 			} else if res.StatusCode == 404 {
 				// If the API cannot find a user by the given username, we skip the user
 				s.log("public keys for user %v not found in api, continuing", true, user.Name)
+				if err := s.saveUnprocessedUser(user.Name, user); err != nil {
+					panic(err)
+				}
 				continue
 			}
 			// If we encounter any unknown error, we wait for the configured duration before continuing
@@ -283,6 +286,9 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 		if err := json.NewDecoder(res.Body).Decode(&publicKeys); err != nil {
 			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
 			s.log("failed to decode sshkeys api response from json for user %v: %v", true, user.Name, err)
+			if err := s.saveUnprocessedUser(user.Name, user); err != nil {
+				panic(err)
+			}
 			continue
 		}
 		s.processResponse(ctx, &user, &publicKeys.Entries)
@@ -358,7 +364,6 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 		}
 		var usersResponse LaunchpadPeopleApiResponse
 		if err := json.NewDecoder(res.Body).Decode(&usersResponse); err != nil {
-			// When we fail to decode the public keys due to some weird behaviour of the API, we continue with the next user
 			s.log("failed to decode people api response from json at cursor %v (url: %v): %v", true, s.Cursor, requestUrl, err)
 			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 			return false, err
