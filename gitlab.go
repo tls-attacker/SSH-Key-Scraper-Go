@@ -293,6 +293,15 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 					panic(err)
 				}
 				continue
+			} else if res.StatusCode == 500 {
+				// Rarely retrieving SSH public keys for a user fails repeatedly with status code 500 for unknown reasons
+				// In this case, we store the user as unprocessed for further analysis and proceed scraping the next user
+				// Note that this behavior is distinct from 503 status codes
+				s.log("encountered status code 500 while retrieving public keys for user %v, something might be wrong on the other end", true, user.Username)
+				if err := s.saveUnprocessedUser(user.Username, user); err != nil {
+					panic(err)
+				}
+				continue
 			}
 			// If we encounter any unknown error, we wait for the configured duration before continuing
 			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
