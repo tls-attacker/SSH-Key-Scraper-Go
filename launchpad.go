@@ -15,7 +15,7 @@ import (
 )
 
 // requestedTimespanLaunchpad specifies the timespan which we request in a single request from the search API (72 hours)
-const requestedTimespanLaunchpad = 3 * 24 * time.Hour
+const requestedTimespanLaunchpad = 24 * time.Hour
 
 const (
 	MetaLaunchpadUserIsValid       = "isValid"
