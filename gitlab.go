@@ -59,7 +59,7 @@ func (s *GitlabScraper) getUserMetadataMapping() *types.ObjectProperty {
 }
 
 func (s *GitlabScraper) getPublicKeyMetadataMapping() *types.ObjectProperty {
-	format := "yyyyyy-MM-dd'T'HH:mm:ssXXX||yyyyy-MM-dd'T'HH:mm:ssXXX||strict_date_optional_time||epoch_millis"
+	format := "yyyyyy-MM-dd'T'HH:mm:ss[.SSS]XXX||yyyyy-MM-dd'T'HH:mm:ss[.SSS]XXX||strict_date_optional_time||epoch_millis"
 	expiresAtType := types.NewDateProperty()
 	expiresAtType.Format = &format
 	return &types.ObjectProperty{
