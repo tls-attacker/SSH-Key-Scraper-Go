@@ -43,6 +43,9 @@ const (
 	ConfigSecondaryRateLimitCooldown PlatformConfigKey = "secondaryRateLimitCooldown"
 	ConfigApiErrorCooldown           PlatformConfigKey = "apiErrorCooldown"
 	ConfigMinimumIterationDuration   PlatformConfigKey = "minimumIterationDuration"
+	ConfigUserIndex                  PlatformConfigKey = "userIndex"
+	ConfigIncrementalInterval        PlatformConfigKey = "incrementalInterval"
+	ConfigFullInterval               PlatformConfigKey = "fullInterval"
 )
 
 type Scraper struct {
@@ -201,10 +204,8 @@ func (s *Scraper) getFullScrapeJob() quartz.Job {
 		} else if done {
 			s.log("full scrape done, scheduling reset and incremental jobs", false)
 			s.FullScrapeDone = true
-			// Next full scrape in 30 days
-			s.RescrapeAt = time.Now().Add(s.getPlatformConfigDuration("fullInterval"))
-			// Next incremental scrape in 24 hours
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration("incrementalInterval"))
+			s.RescrapeAt = time.Now().Add(s.getPlatformConfigDuration(ConfigFullInterval))
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigIncrementalInterval))
 			s.scheduleResetJob()
 		} else {
 			s.log("full scrape not complete, rescheduling job at %v", false, s.ContinueAt.Format(time.RFC3339))
@@ -217,12 +218,16 @@ func (s *Scraper) getFullScrapeJob() quartz.Job {
 
 func (s *Scraper) getIncrementalScrapeJob() quartz.Job {
 	return job.NewFunctionJobWithDesc(func(ctx context.Context) (interface{}, error) {
-		_, err := s.ScrapePlatform(ctx)
+		done, err := s.ScrapePlatform(ctx)
 		if err != nil {
 			s.log("error occured during scrape run: %v", true, err)
-		} else {
+		} else if done {
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigIncrementalInterval))
 			s.log("incremental scrape done, rescheduling incremental scrape job at %v", false, s.ContinueAt.Format(time.RFC3339))
+		} else {
+			s.log("incremental scrape not complete, rescheduling job at %v", false, s.ContinueAt.Format(time.RFC3339))
 		}
+		// Schedule next scrape job
 		s.scheduleScrapeJob()
 		return nil, s.Save(ctx)
 	}, fmt.Sprintf("[%v] Scrapes SSH keys from new users since last execution", s.Platform))
@@ -347,7 +352,7 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 			Elasticsearch:  es,
 			context:        ctx,
 		}
-		scraper.UserIndex = scraper.getPlatformConfigString("userIndex")
+		scraper.UserIndex = scraper.getPlatformConfigString(ConfigUserIndex)
 		err = scraper.Save(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create new scraper: %w", err)
