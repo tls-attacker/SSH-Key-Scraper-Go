@@ -374,6 +374,7 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 						// This should never occur if the API behaves properly
 						s.log("failed to get cursor while trying skip ahead: %v", true, err)
 						s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
+						close(users)
 						return false, err
 					}
 					res, err = gitlab.GetUsers(ctx, gqlClient, tmpCursor)
@@ -385,6 +386,7 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 					}
 					// If we encounter any error, we wait for the configured duration before continuing
 					s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
+					close(users)
 					return false, err
 				}
 				break
