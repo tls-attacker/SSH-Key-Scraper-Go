@@ -110,9 +110,9 @@ func (s *GitlabScraper) gidToUserId(gid string) (int, error) {
 	return strconv.Atoi(parts[len(parts)-1])
 }
 
-func (s *GitlabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore) {
+func (s *GitlabScraper) getCursor(last *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore) (string, error) {
 	if last == nil {
-		return
+		return "", fmt.Errorf("last user is nil, unable to get cursor")
 	}
 	type cursor struct {
 		CreatedAt string `json:"created_at"`
@@ -121,16 +121,26 @@ func (s *GitlabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersU
 	userId, err := s.gidToUserId(last.Id)
 	if err != nil {
 		s.log("failed to parse user id from gid: %v", true, err)
-		return
+		return "", fmt.Errorf("failed to parse user id from gid: %v", true)
 	}
 	cursorData := cursor{
 		CreatedAt: last.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		Id:        strconv.Itoa(userId),
 	}
 	cursorJson, _ := json.Marshal(cursorData)
-	s.Cursor = base64.StdEncoding.EncodeToString(cursorJson)
-	if err := s.Save(ctx); err != nil {
+	return base64.StdEncoding.EncodeToString(cursorJson), nil
+}
+
+func (s *GitlabScraper) updateCursor(ctx context.Context, last *gitlab.GetUsersUsersUserCoreConnectionNodesUserCore) {
+	cursor, err := s.getCursor(last)
+	if err != nil {
+		s.log("failed to get cursor while trying to update cursor: %v", true, err)
+		return
+	}
+	s.Cursor = cursor
+	if err = s.Save(ctx); err != nil {
 		s.log("failed to save cursor: %v", true, err)
+		return
 	}
 	s.log("cursor updated, new cursor: %v", false, s.Cursor)
 }
@@ -339,50 +349,68 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 
 	wg := sync.WaitGroup{}
 	concurrentRequests := s.getPlatformConfigInt(ConfigConcurrentRequests)
-	retry := 0
 	maxRetries := s.getPlatformConfigInt(ConfigMaxRetries)
 	minimumIterationDuration := s.getPlatformConfigDuration(ConfigMinimumIterationDuration)
 	var res *gitlab.GetUsersResponse
 	var err error
 	for {
 		iterationStart := time.Now()
-		// Start by fetching the next page of users
-		res, err = gitlab.GetUsers(ctx, gqlClient, s.Cursor)
-		if err != nil {
-			retry++
-			if retry <= maxRetries {
-				s.log("failed to retrieve user's public keys from gitlab, retrying %v/%v", true, retry, maxRetries)
-				continue
-			}
-			// If we encounter any error, we wait for the configured duration before continuing
-			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
-			return false, err
-		}
-		retry = 0
-
-		users := make(chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, len(res.Users.Nodes))
+		// Setup public key workers for this main loop iteration
+		users := make(chan gitlab.GetUsersUsersUserCoreConnectionNodesUserCore, 1000)
 		failures := make(chan error, concurrentRequests)
 		wg.Add(concurrentRequests)
 		for i := 0; i < concurrentRequests; i++ {
 			go s.publicKeyWorker(ctx, users, failures, &wg)
 		}
-		for _, user := range res.Users.Nodes {
-			users <- user
+		// Request up to 10 pages (1000 users) per main loop iteration
+		for i := 0; i < 10; i++ {
+			for retry := 0; retry < maxRetries; retry++ {
+				if i == 0 {
+					res, err = gitlab.GetUsers(ctx, gqlClient, s.Cursor)
+				} else {
+					var tmpCursor string
+					tmpCursor, err = s.getCursor(&res.Users.Nodes[len(res.Users.Nodes)-1])
+					if err != nil {
+						// This should never occur if the API behaves properly
+						s.log("failed to get cursor while trying skip ahead: %v", true, err)
+						s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
+						return false, err
+					}
+					res, err = gitlab.GetUsers(ctx, gqlClient, tmpCursor)
+				}
+				if err != nil {
+					if retry <= maxRetries {
+						s.log("failed to retrieve next batch of users from gitlab, retrying %v/%v", true, retry, maxRetries)
+						continue
+					}
+					// If we encounter any error, we wait for the configured duration before continuing
+					s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
+					return false, err
+				}
+				break
+			}
+			// Channel requested users to the public key worker goroutines
+			for _, user := range res.Users.Nodes {
+				users <- user
+			}
+			// Exit early if we reached the end of pagination
+			if !res.Users.PageInfo.HasNextPage {
+				break
+			}
 		}
+		// Close channel and wait for goroutines to complete
 		close(users)
-		// Wait for processing to complete
 		wg.Wait()
-
 		if len(failures) > 0 {
 			// If we encounter any error, we wait for the configured duration before continuing
 			return false, <-failures
 		}
-
 		// Update the cursor to the last user we have seen
 		s.updateCursor(ctx, &res.Users.Nodes[len(res.Users.Nodes)-1])
 		if !res.Users.PageInfo.HasNextPage {
 			return true, nil
 		}
+		// Ensure that we at least took minimumIterationDuration for this main loop iteration
 		iterationEnd := time.Now()
 		iterationDuration := iterationEnd.Sub(iterationStart)
 		if iterationDuration < minimumIterationDuration {
