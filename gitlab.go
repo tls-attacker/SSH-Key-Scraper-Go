@@ -363,33 +363,33 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 			go s.publicKeyWorker(ctx, users, failures, &wg)
 		}
 		// Request up to 10 pages (1000 users) per main loop iteration
-		var cursor string
 		for i := 0; i < 10; i++ {
-			if i == 0 {
-				cursor = s.Cursor
-			} else {
-				cursor, err = s.getCursor(&res.Users.Nodes[len(res.Users.Nodes)-1])
-				if err != nil {
-					// This should never occur if the API behaves properly
-					s.log("failed to get cursor while trying skip ahead: %v", true, err)
-					s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
-					close(users)
-					return false, err
-				}
-			}
-			for retry, success := 0, false; !success; retry++ {
-				res, err = gitlab.GetUsers(ctx, gqlClient, cursor)
-				success = err == nil
-				if !success {
-					if retry <= maxRetries {
-						s.log("failed to retrieve next batch of users from gitlab, retrying %v/%v: %v", true, retry, maxRetries, err)
-					} else {
-						// If we encounter any error, we wait for the configured duration before continuing
+			for retry := 0; retry < maxRetries; retry++ {
+				if i == 0 {
+					res, err = gitlab.GetUsers(ctx, gqlClient, s.Cursor)
+				} else {
+					var tmpCursor string
+					tmpCursor, err = s.getCursor(&res.Users.Nodes[len(res.Users.Nodes)-1])
+					if err != nil {
+						// This should never occur if the API behaves properly
+						s.log("failed to get cursor while trying skip ahead: %v", true, err)
 						s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
 						close(users)
 						return false, err
 					}
+					res, err = gitlab.GetUsers(ctx, gqlClient, tmpCursor)
 				}
+				if err != nil {
+					if retry <= maxRetries {
+						s.log("failed to retrieve next batch of users from gitlab, retrying %v/%v", true, retry, maxRetries)
+						continue
+					}
+					// If we encounter any error, we wait for the configured duration before continuing
+					s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
+					close(users)
+					return false, err
+				}
+				break
 			}
 			// Channel requested users to the public key worker goroutines
 			for _, user := range res.Users.Nodes {
