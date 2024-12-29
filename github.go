@@ -9,7 +9,6 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -151,7 +150,7 @@ func (s *GithubScraper) processResponse(ctx context.Context, res github.GetSshPu
 				Request(&search.Request{
 					Query: &types.Query{
 						Match: map[string]types.MatchQuery{
-							"databaseId": {Query: strconv.Itoa(user.DatabaseId)},
+							"username": {Query: user.Login},
 						},
 					},
 				}).Do(ctx)

@@ -192,7 +192,7 @@ func (s *GitlabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 		Request(&search.Request{
 			Query: &types.Query{
 				Match: map[string]types.MatchQuery{
-					"databaseId": {Query: user.Id},
+					"username": {Query: user.Username},
 				},
 			},
 		}).Do(ctx)
