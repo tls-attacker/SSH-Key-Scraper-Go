@@ -4,10 +4,12 @@ import (
 	"SSH-Key-Scraper/graphql/github"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Khan/genqlient/graphql"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	"github.com/vektah/gqlparser/v2/gqlerror"
 	"net/http"
 	"strings"
 	"sync"
@@ -142,7 +144,10 @@ func (s *GithubScraper) mapToUserEntry(user *github.GetSshPublicKeysSearchSearch
 }
 
 func (s *GithubScraper) processResponse(ctx context.Context, res github.GetSshPublicKeysResponse, wg *sync.WaitGroup) {
-	defer wg.Done()
+	// Allow wg to be nil in case processResponse is executed synchronously
+	if wg != nil {
+		defer wg.Done()
+	}
 	for _, user := range res.Search.Nodes {
 		if user, ok := user.(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser); ok {
 			searchResult, err := s.Elasticsearch.Search().
@@ -205,11 +210,158 @@ func (s *GithubScraper) processResponse(ctx context.Context, res github.GetSshPu
 	}
 }
 
-func (s *GithubScraper) handleApiError(err error) {
+func (s *GithubScraper) handleNotFoundError(ctx context.Context, queryString string, after string) {
+	var data struct {
+		Search struct {
+			Nodes []any `json:"nodes"`
+		} `json:"search"`
+	}
+	client := s.newGraphQLClient()
+	req := &graphql.Request{
+		OpName: "GetSshPublicKeys",
+		Query:  github.GetSshPublicKeys_Operation,
+		Variables: struct {
+			Query string `json:"query"`
+			After string `json:"after,omitempty"`
+		}{
+			Query: queryString,
+			After: after,
+		},
+	}
+	resp := &graphql.Response{Data: &data}
+	// Make request but do not check the error as we can expect it to indicate the "Not Found" errors
+	_ = client.MakeRequest(ctx, req, resp)
+	for index, userNode := range data.Search.Nodes {
+		// Check if userNode is nil (which is the case when the user is not found by GitHub for whatever reason)
+		if userNode == nil {
+			s.log("skipped nil user node at index %v (query: '%v' | after: '%v')", false, index, queryString, after)
+			continue
+		}
+		var userObject map[string]any
+		var ok bool
+		if userObject, ok = userNode.(map[string]any); !ok {
+			s.log("failed to parse user object from defect response while trying to handle not found error, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		// userNode should be okay to process, try to recover data from the node
+		var publicKeyObject map[string]any
+		if publicKeyObject, ok = userObject["publicKeys"].(map[string]any); !ok {
+			s.log("failed to parse public key response object from defect response while trying to handle not found error, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		var publicKeyTotalCount float64
+		if publicKeyTotalCount, ok = publicKeyObject["totalCount"].(float64); !ok {
+			s.log("failed to parse total public key count from defect response while trying to handle not found error, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		publicKeyNodes := make([]map[string]any, 0, int(publicKeyTotalCount))
+		var publicKeyNodeArray []any
+		if publicKeyNodeArray, ok = publicKeyObject["nodes"].([]any); !ok {
+			s.log("failed to parse public key node array from defect response while trying to handle not found error, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		for nodeIndex, node := range publicKeyNodeArray {
+			var mappedNode map[string]any
+			if mappedNode, ok = node.(map[string]any); !ok {
+				s.log("failed to parse public key node from defect response while trying to handle not found error, skipping public key %v for user at index %v (query: '%v' | after: '%v')", true, nodeIndex, index, queryString, after)
+				continue
+			}
+			publicKeyNodes = append(publicKeyNodes, mappedNode)
+		}
+		publicKeys := github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUserPublicKeysPublicKeyConnection{
+			TotalCount: int(publicKeyTotalCount),
+		}
+		for pkIndex, publicKeyNode := range publicKeyNodes {
+			var pkKey string
+			if pkKey, ok = publicKeyNode["key"].(string); !ok {
+				s.log("failed to parse public key from defect response while trying to handle not found error, skipping public key at index %v from user node at index %v (query: '%v' | after: '%v')", true, pkIndex, index, queryString, after)
+				continue
+			}
+			var pkFingerprint string
+			if pkFingerprint, ok = publicKeyNode["fingerprint"].(string); !ok {
+				s.log("failed to parse public key fingerprint from defect response while trying to handle not found error, skipping public key at index %v from user node at index %v (query: '%v' | after: '%v')", true, pkIndex, index, queryString, after)
+				continue
+			}
+			publicKey := github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUserPublicKeysPublicKeyConnectionNodesPublicKey{
+				Key:         pkKey,
+				Fingerprint: pkFingerprint,
+			}
+			publicKeys.Nodes = append(publicKeys.Nodes, publicKey)
+		}
+		var databaseId float64
+		if databaseId, ok = userObject["databaseId"].(float64); !ok {
+			s.log("failed to parse database id from defect response while trying to handle not found errors, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		var login string
+		if login, ok = userObject["login"].(string); !ok {
+			s.log("failed to parse login from defect response while trying to handle not found errors, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		var createdAtString string
+		if createdAtString, ok = userObject["createdAt"].(string); !ok {
+			s.log("failed to parse createdAt from defect response while trying to handle not found errors, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		createdAt, err := time.Parse(time.RFC3339, createdAtString)
+		if err != nil {
+			s.log("failed to parse createdAt time from defect response while trying to handle not found errors, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		var updatedAtString string
+		if updatedAtString, ok = userObject["updatedAt"].(string); !ok {
+			s.log("failed to parse updatedAt from defect response while trying to handle not found errors, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		updatedAt, err := time.Parse(time.RFC3339, updatedAtString)
+		if err != nil {
+			s.log("failed to parse updatedAt time from defect response while trying to handle not found errors, skipping user node at index %v (query: '%v' | after: '%v')", true, index, queryString, after)
+			continue
+		}
+		user := github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser{
+			DatabaseId: int(databaseId),
+			Login:      login,
+			CreatedAt:  createdAt,
+			UpdatedAt:  updatedAt,
+			PublicKeys: publicKeys,
+		}
+		// Store recovered users one by one in order to be able to update the cursor after each insertion
+		recoveredResponse := github.GetSshPublicKeysResponse{}
+		recoveredResponse.Search.Nodes = append(recoveredResponse.Search.Nodes, &user)
+		s.processResponse(ctx, recoveredResponse, nil)
+		s.Cursor = user.CreatedAt.Format(time.RFC3339)
+		if err = s.Save(ctx); err != nil {
+			s.log("failed to save cursor: %v", true, err)
+		}
+		s.log("recovered single user at index %v from defect API response, new cursor: %v", false, index, s.Cursor)
+	}
+}
+
+func (s *GithubScraper) handleApiError(ctx context.Context, err error, queryString string, after string) {
+	var gqlerr gqlerror.List
 	if strings.Contains(err.Error(), "You have exceeded a secondary rate limit") {
 		// If we hit the secondary rate limit, we wait for a minute before continuing
 		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigSecondaryRateLimitCooldown))
 		s.log("secondary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
+	} else if errors.As(err, &gqlerr) {
+		// Check if the error has been caused by GitHub being unable to find (?!) some users
+		// This seems to be a bug or database inconsistency on GitHub's end causing the API to return null,
+		// thus returning errors instead. We work around this to avoid getting stuck while scraping.
+		isOnlyNotFound := true
+		for _, e := range gqlerr {
+			isOnlyNotFound = isOnlyNotFound && e.Message == "Not Found"
+		}
+		if !isOnlyNotFound {
+			// Others errors are present as well, fallback to generic error routine (sleeping the configured delay and retry)
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
+			return
+		}
+		// We now know that all errors are "Not Found" errors and that these errors occur when querying queryString
+		// with the after cursor. Parse request manually to extract non-faulty data that is present in the request.
+		s.log("encountered \"Not Found\" errors (query: '%v' | after: '%v'), trying to recover as many user nodes as possible from current page (best effort)", false, queryString, after)
+		s.handleNotFoundError(ctx, queryString, after)
+		// Continue immediately
+		s.ContinueAt = time.Now()
 	} else {
 		// If we encounter any other error, we wait for an hour before continuing
 		s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
@@ -241,9 +393,10 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 		// Start by requesting the first page of search results staring from the cursor
-		res, err = github.GetSshPublicKeys(ctx, client, s.compileQueryString(s.Cursor), "")
+		queryString := s.compileQueryString(s.Cursor)
+		res, err = github.GetSshPublicKeys(ctx, client, queryString, "")
 		if err != nil {
-			s.handleApiError(err)
+			s.handleApiError(ctx, err, queryString, "")
 			return false, err
 		}
 		rateLimitRemaining = res.RateLimit.Remaining
@@ -263,9 +416,11 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 				s.log("primary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 				return false, nil
 			}
-			res, err = github.GetSshPublicKeys(ctx, client, s.compileQueryString(s.Cursor), res.Search.PageInfo.EndCursor)
+			queryString = s.compileQueryString(s.Cursor)
+			after := res.Search.PageInfo.EndCursor
+			res, err = github.GetSshPublicKeys(ctx, client, queryString, after)
 			if err != nil {
-				s.handleApiError(err)
+				s.handleApiError(ctx, err, queryString, after)
 				return false, err
 			}
 			rateLimitRemaining = res.RateLimit.Remaining
