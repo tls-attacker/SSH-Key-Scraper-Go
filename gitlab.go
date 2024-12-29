@@ -265,7 +265,7 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 			if err != nil {
 				retry++
 				if retry <= maxRetries {
-					s.log("failed to retrieve user's public keys from gitlab, retrying %v/%v", true, retry, maxRetries)
+					s.log("failed to retrieve user's public keys from gitlab, retrying %v/%v: %v", true, retry, maxRetries, err)
 					continue
 				}
 				// If we encounter any error after exceeding maxRetries, we wait for the configured duration before continuing
@@ -351,7 +351,7 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 		if err != nil {
 			retry++
 			if retry <= maxRetries {
-				s.log("failed to retrieve user's public keys from gitlab, retrying %v/%v", true, retry, maxRetries)
+				s.log("failed to retrieve next batch of users from gitlab, retrying %v/%v: %v", true, retry, maxRetries, err)
 				continue
 			}
 			// If we encounter any error, we wait for the configured duration before continuing
