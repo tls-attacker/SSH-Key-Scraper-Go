@@ -195,7 +195,7 @@ func (s *GitlabScraper) processResponse(ctx context.Context, user *gitlab.GetUse
 					"username": {Query: user.Username},
 				},
 			},
-		}).Do(ctx)
+		}).Preference("_local").Do(ctx)
 	if err != nil {
 		// If anything goes wrong, we save the unprocessed user to a file
 		s.log("failed to search for user %v in elasticsearch: %v", true, user.Username, err)

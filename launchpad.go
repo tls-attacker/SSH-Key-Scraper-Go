@@ -186,7 +186,7 @@ func (s *LaunchpadScraper) processResponse(ctx context.Context, user *LaunchpadP
 					"username": {Query: user.Name},
 				},
 			},
-		}).Do(ctx)
+		}).Preference("_local").Do(ctx)
 	if err != nil {
 		// If anything goes wrong, we save the unprocessed user to a file
 		s.log("failed to search for user %v in elasticsearch: %v", true, user.Name, err)

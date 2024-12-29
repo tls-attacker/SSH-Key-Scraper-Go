@@ -340,7 +340,7 @@ func LoadScraper(ctx context.Context, es *elasticsearch.TypedClient, platform Pl
 					"platform": {Query: string(platform)},
 				},
 			},
-		}).Do(ctx)
+		}).Preference("_local").Do(ctx)
 	var scraper *Scraper
 	if err != nil {
 		return nil, fmt.Errorf("failed to check if scraper exists in database: %w", err)
