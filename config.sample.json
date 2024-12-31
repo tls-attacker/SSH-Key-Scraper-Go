@@ -14,6 +14,7 @@
   "scrapers": {
     "github": {
       "enabled": true,
+      "reverse": false,
       "token": "",
       "timeout": "30s",
       "minimumIterationDuration": "20s",
@@ -26,6 +27,7 @@
     },
     "gitlab": {
       "enabled": true,
+      "reverse": false,
       "token": "",
       "timeout": "30s",
       "minimumIterationDuration": "0s",
@@ -39,6 +41,7 @@
     },
     "launchpad": {
       "enabled": true,
+      "reverse": false,
       "timeout": "30s",
       "minimumIterationDuration": "0s",
       "userIndex": "sshks_users_launchpad",

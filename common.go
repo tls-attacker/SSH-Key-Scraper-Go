@@ -35,6 +35,7 @@ const (
 type PlatformConfigKey string
 
 const (
+	ConfigReverse                    PlatformConfigKey = "reverse"
 	ConfigToken                      PlatformConfigKey = "token"
 	ConfigTimeout                    PlatformConfigKey = "timeout"
 	ConfigMaxRetries                 PlatformConfigKey = "maxRetries"
@@ -134,6 +135,10 @@ func (s *Scraper) saveUnprocessedUser(key string, user any) error {
 		return fmt.Errorf("failed to encode unprocessed user to json: %w", err)
 	}
 	return nil
+}
+
+func (s *Scraper) getPlatformConfigBool(key PlatformConfigKey) bool {
+	return viper.GetBool(fmt.Sprintf("scrapers.%s.%s", s.Platform, key))
 }
 
 func (s *Scraper) getPlatformConfigString(key PlatformConfigKey) string {

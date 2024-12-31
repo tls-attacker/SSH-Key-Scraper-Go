@@ -347,7 +347,11 @@ func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 	for {
 		iterationStart := time.Now()
 		// Start by fetching the next page of users
-		res, err = gitlab.GetUsers(ctx, gqlClient, s.Cursor)
+		if !s.getPlatformConfigBool(ConfigReverse) {
+			res, err = gitlab.GetUsers(ctx, gqlClient, s.Cursor, gitlab.Sort_CREATED_ASC)
+		} else {
+			res, err = gitlab.GetUsers(ctx, gqlClient, s.Cursor, gitlab.Sort_CREATED_DESC)
+		}
 		if err != nil {
 			retry++
 			if retry <= maxRetries {

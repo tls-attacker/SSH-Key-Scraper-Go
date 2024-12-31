@@ -11,3 +11,6 @@ bindings:
     unmarshaler: SSH-Key-Scraper/graphql/gitlab.UnmarshalDate
   Time:
     type: time.Time
+casing:
+  enums:
+    Sort: raw

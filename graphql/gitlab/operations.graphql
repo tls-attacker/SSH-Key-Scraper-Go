@@ -1,7 +1,8 @@
 query GetUsers(
-    $after: String
+    $after: String,
+    $sort: Sort!
 ) {
-    users(sort: CREATED_ASC, first: 100, after: $after) {
+    users(sort: $sort, first: 100, after: $after) {
         pageInfo {
             endCursor
             hasNextPage

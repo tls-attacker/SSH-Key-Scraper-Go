@@ -76,25 +76,23 @@ func (s *GithubScraper) newGraphQLClient() graphql.Client {
 }
 
 func (s *GithubScraper) compileQueryString(cursor string) string {
-	startDate, _ := time.Parse(time.RFC3339, cursor)
-	endDate := startDate.Add(requestedTimespanGithub)
-	return fmt.Sprintf("created:%s..%s type:user sort:joined-asc",
-		startDate.UTC().Format("2006-01-02T15:04:05Z"),
-		endDate.UTC().Format("2006-01-02T15:04:05Z"))
+	if !s.getPlatformConfigBool(ConfigReverse) {
+		startDate, _ := time.Parse(time.RFC3339, cursor)
+		endDate := startDate.Add(requestedTimespanGithub)
+		return fmt.Sprintf("created:%s..%s type:user sort:joined-asc",
+			startDate.UTC().Format("2006-01-02T15:04:05Z"),
+			endDate.UTC().Format("2006-01-02T15:04:05Z"))
+	} else {
+		endDate, _ := time.Parse(time.RFC3339, cursor)
+		startDate := endDate.Add(-requestedTimespanGithub)
+		return fmt.Sprintf("created:%s..%s type:user sort:joined-desc",
+			startDate.UTC().Format("2006-01-02T15:04:05Z"),
+			endDate.UTC().Format("2006-01-02T15:04:05Z"))
+	}
 }
 
-func (s *GithubScraper) updateCursor(ctx context.Context, res *github.GetSshPublicKeysResponse) {
-	if res.Search.UserCount < searchLimit && !res.Search.PageInfo.HasNextPage {
-		current, _ := time.Parse(time.RFC3339, s.Cursor)
-		current = current.Add(requestedTimespanGithub)
-		now := time.Now()
-		if current.After(now) {
-			current = now
-		}
-		s.Cursor = current.Format(time.RFC3339)
-	} else if user, ok := res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser); ok {
-		s.Cursor = user.CreatedAt.Format(time.RFC3339)
-	}
+func (s *GithubScraper) updateCursor(ctx context.Context, last *github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser) {
+	s.Cursor = last.CreatedAt.Format(time.RFC3339)
 	if err := s.Save(ctx); err != nil {
 		s.log("failed to save cursor: %v", true, err)
 	}
@@ -403,7 +401,12 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 
 		// Check if this iteration is the last one for now
 		cursor, _ := time.Parse(time.RFC3339, s.Cursor)
-		lastIteration := cursor.Add(requestedTimespanGithub).After(time.Now()) && res.Search.UserCount < searchLimit
+		var lastIteration bool
+		if !s.getPlatformConfigBool(ConfigReverse) {
+			lastIteration = cursor.Add(requestedTimespanGithub).After(time.Now()) && res.Search.UserCount < searchLimit
+		} else {
+			lastIteration = cursor.Add(-requestedTimespanGithub).Before(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)) && res.Search.UserCount < searchLimit
+		}
 
 		wg.Add(1)
 		go s.processResponse(ctx, *res, &wg)
@@ -411,7 +414,7 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 		// Paginate through all search results until we reach the end (at most 1000 entries)
 		for res.Search.PageInfo.HasNextPage {
 			if rateLimitRemaining < 2 {
-				s.updateCursor(ctx, res)
+				s.updateCursor(ctx, res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser))
 				s.ContinueAt = res.RateLimit.ResetAt.Add(1 * time.Minute)
 				s.log("primary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 				return false, nil
@@ -432,7 +435,7 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 		// Wait for processing to complete
 		wg.Wait()
 		// Update the cursor to the last user we have seen
-		s.updateCursor(ctx, res)
+		s.updateCursor(ctx, res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser))
 		if lastIteration {
 			return true, nil
 		}

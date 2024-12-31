@@ -109,7 +109,11 @@ func (s *LaunchpadScraper) updateCursor(ctx context.Context) {
 	// We only call this function after a successful scrape, so we can assume that we processed all data in the current
 	// timespan. We can therefore safely move the cursor to the next timespan.
 	current, _ := time.Parse(time.RFC3339, s.Cursor)
-	current = current.Add(requestedTimespanLaunchpad)
+	if !s.getPlatformConfigBool(ConfigReverse) {
+		current = current.Add(requestedTimespanLaunchpad)
+	} else {
+		current = current.Add(-requestedTimespanLaunchpad)
+	}
 	// If the new cursor is in the future, we set the cursor to the current time
 	now := time.Now()
 	if current.After(now) {
@@ -319,12 +323,22 @@ func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 
 		// If we are on the first page in the current timespan, we compose the request URL from start date to end date
 		if page == 0 {
-			startDate, _ := time.Parse(time.RFC3339, s.Cursor)
-			endDate := startDate.Add(requestedTimespanLaunchpad)
-			lastTimespan = endDate.After(time.Now())
-			requestUrl = fmt.Sprintf("https://api.launchpad.net/devel/people?created_after=\"%s\"&created_before=\"%s\"&text=\"\"&ws.op=findPerson&ws.size=100",
-				url.QueryEscape(startDate.UTC().Format("2006-01-02T15:04:05Z")),
-				url.QueryEscape(endDate.UTC().Format("2006-01-02T15:04:05Z")))
+			if !s.getPlatformConfigBool(ConfigReverse) {
+				startDate, _ := time.Parse(time.RFC3339, s.Cursor)
+				endDate := startDate.Add(requestedTimespanLaunchpad)
+				lastTimespan = endDate.After(time.Now())
+				requestUrl = fmt.Sprintf("https://api.launchpad.net/devel/people?created_after=\"%s\"&created_before=\"%s\"&text=\"\"&ws.op=findPerson&ws.size=100",
+					url.QueryEscape(startDate.UTC().Format("2006-01-02T15:04:05Z")),
+					url.QueryEscape(endDate.UTC().Format("2006-01-02T15:04:05Z")))
+			} else {
+				endDate, _ := time.Parse(time.RFC3339, s.Cursor)
+				startDate := endDate.Add(-requestedTimespanLaunchpad)
+				// Stop when reaching 2000-01-01T00:00:00Z
+				lastTimespan = startDate.Before(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+				requestUrl = fmt.Sprintf("https://api.launchpad.net/devel/people?created_after=\"%s\"&created_before=\"%s\"&text=\"\"&ws.op=findPerson&ws.size=100",
+					url.QueryEscape(startDate.UTC().Format("2006-01-02T15:04:05Z")),
+					url.QueryEscape(endDate.UTC().Format("2006-01-02T15:04:05Z")))
+			}
 		}
 		var res *http.Response
 		var err error
