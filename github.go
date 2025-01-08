@@ -414,7 +414,11 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 		// Paginate through all search results until we reach the end (at most 1000 entries)
 		for res.Search.PageInfo.HasNextPage {
 			if rateLimitRemaining < 2 {
-				s.updateCursor(ctx, res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser))
+				if len(res.Search.Nodes) > 0 {
+					s.updateCursor(ctx, res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser))
+				} else {
+					s.log("unable to update cursor, search result does not contain any nodes", true)
+				}
 				s.ContinueAt = res.RateLimit.ResetAt.Add(1 * time.Minute)
 				s.log("primary rate limit exceeded, continuing at %v", false, s.ContinueAt.Format(time.RFC3339))
 				return false, nil
@@ -435,7 +439,15 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 		// Wait for processing to complete
 		wg.Wait()
 		// Update the cursor to the last user we have seen
-		s.updateCursor(ctx, res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser))
+		if len(res.Search.Nodes) > 0 {
+			s.updateCursor(ctx, res.Search.Nodes[len(res.Search.Nodes)-1].(*github.GetSshPublicKeysSearchSearchResultItemConnectionNodesUser))
+		} else {
+			// This can only happen if there is an API error or the initial cursor is not chosen appropriately
+			// Skipping an entire timeframe here may yield unexpected results or incomplete results, therefore we return an error and try again later
+			s.log("unable to update cursor, search result does not contain any nodes", true)
+			s.ContinueAt = time.Now().Add(s.getPlatformConfigDuration(ConfigApiErrorCooldown))
+			return false, fmt.Errorf("unable to update cursor, search result does not contain any nodes")
+		}
 		if lastIteration {
 			return true, nil
 		}
