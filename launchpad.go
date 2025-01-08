@@ -17,6 +17,10 @@ import (
 // requestedTimespanLaunchpad specifies the timespan which we request in a single request from the search API (72 hours)
 const requestedTimespanLaunchpad = 24 * time.Hour
 
+// initialCursorLaunchpad is the creation date of the first user account on Launchpad. It is used as the start point
+// (or end point in case of reverse direction) for scraping runs
+var initialCursorLaunchpad = time.Date(2005, 6, 15, 02, 17, 43, 0, time.UTC)
+
 const (
 	MetaLaunchpadUserIsValid       = "isValid"
 	MetaLaunchpadUserIsTeam        = "isTeam"
@@ -302,7 +306,7 @@ func (s *LaunchpadScraper) publicKeyWorker(ctx context.Context, users <-chan Lau
 func (s *LaunchpadScraper) Scrape(ctx context.Context) (bool, error) {
 	httpClient := s.newHttpClient()
 	if s.Cursor == "" {
-		s.Cursor = s.getPlatformConfigString(ConfigInitialCursor)
+		s.Cursor = initialCursorLaunchpad.Format(time.RFC3339)
 		if err := s.Save(ctx); err != nil {
 			panic(err)
 		}

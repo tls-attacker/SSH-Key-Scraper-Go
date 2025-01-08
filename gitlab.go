@@ -328,12 +328,6 @@ func (s *GitlabScraper) publicKeyWorker(ctx context.Context, users <-chan gitlab
 
 func (s *GitlabScraper) Scrape(ctx context.Context) (bool, error) {
 	gqlClient := s.newGraphQLClient()
-	if s.Cursor == "" {
-		s.Cursor = s.getPlatformConfigString(ConfigInitialCursor)
-		if err := s.Save(ctx); err != nil {
-			panic(err)
-		}
-	}
 
 	s.log("starting scraping from %v", false, s.Cursor)
 

@@ -39,7 +39,6 @@ const (
 	ConfigToken                      PlatformConfigKey = "token"
 	ConfigTimeout                    PlatformConfigKey = "timeout"
 	ConfigMaxRetries                 PlatformConfigKey = "maxRetries"
-	ConfigInitialCursor              PlatformConfigKey = "initialCursor"
 	ConfigConcurrentRequests         PlatformConfigKey = "concurrentRequests"
 	ConfigSecondaryRateLimitCooldown PlatformConfigKey = "secondaryRateLimitCooldown"
 	ConfigApiErrorCooldown           PlatformConfigKey = "apiErrorCooldown"

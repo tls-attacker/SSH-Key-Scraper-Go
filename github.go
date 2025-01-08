@@ -19,6 +19,10 @@ import (
 // requestedTimespanGithub specifies the timespan which we request in a single request from the search API (30 days)
 const requestedTimespanGithub = 30 * 24 * time.Hour
 
+// initialCursorGithub is the creation date of the first user account on GitHub (user id 1). It is used as the start point
+// (or end point in case of reverse direction) for scraping runs
+var initialCursorGithub = time.Date(2007, 10, 20, 05, 24, 19, 0, time.UTC)
+
 // The maximum number of users GitHub returns to a single search request (even with pagination)
 const searchLimit = 1000
 
@@ -369,7 +373,7 @@ func (s *GithubScraper) handleApiError(ctx context.Context, err error, queryStri
 func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 	client := s.newGraphQLClient()
 	if s.Cursor == "" {
-		s.Cursor = s.getPlatformConfigString(ConfigInitialCursor)
+		s.Cursor = initialCursorGithub.Format(time.RFC3339)
 		if err := s.Save(ctx); err != nil {
 			panic(err)
 		}
@@ -405,7 +409,7 @@ func (s *GithubScraper) Scrape(ctx context.Context) (bool, error) {
 		if !s.getPlatformConfigBool(ConfigReverse) {
 			lastIteration = cursor.Add(requestedTimespanGithub).After(time.Now()) && res.Search.UserCount < searchLimit
 		} else {
-			lastIteration = cursor.Add(-requestedTimespanGithub).Before(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)) && res.Search.UserCount < searchLimit
+			lastIteration = cursor.Add(-requestedTimespanGithub).Before(initialCursorGithub) && res.Search.UserCount < searchLimit
 		}
 
 		wg.Add(1)
